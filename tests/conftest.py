@@ -2,9 +2,9 @@
 
 The app modules live in ``rapid_reader/`` and import each other as top-level
 modules (``import config``), exactly as they run on the device, so that
-directory is put on ``sys.path``. Hardware-only modules (``epd``, the real
-``gpiozero``/``spidev``) are never imported by the tests; ``main`` and
-``buttons`` tolerate their absence.
+directory is put on ``sys.path``. Hardware-only libraries (``spidev``,
+``lgpio``, ``gpiozero``) are never imported by the tests; ``lcd``,
+``display`` and ``buttons`` tolerate their absence.
 """
 
 import os
@@ -59,30 +59,41 @@ def fake_button():
     return FakeButton
 
 
-class FakeEPD:
-    """Records every frame the app pushes, tagged full/partial."""
+class FakePanel:
+    """Stand-in for lcd.ST77xx: records every frame pushed to it."""
 
-    def __init__(self):
+    def __init__(self, width, height):
+        self.width, self.height = width, height
         self.frames = []
+        self.raw = []
+        self.backlight_level = None
         self.sleeping = False
 
-    def display_full(self, image):
-        self.frames.append(("full", image))
+    def show(self, image):
+        assert image.size == (self.width, self.height), image.size
+        self.frames.append(image)
 
-    def display_partial(self, image):
-        self.frames.append(("partial", image))
+    def show_raw(self, buf):
+        assert len(buf) == self.width * self.height * 2
+        self.raw.append(bytes(buf))
+
+    def backlight(self, level):
+        self.backlight_level = level
 
     def sleep(self):
         self.sleeping = True
 
     @property
     def last(self):
-        return self.frames[-1][1]
+        return self.frames[-1]
 
 
 @pytest.fixture
-def fake_epd():
-    return FakeEPD()
+def fake_display():
+    import display
+    return display.Display(FakePanel(config.MAIN_W, config.MAIN_H),
+                           FakePanel(config.SIDE_W, config.SIDE_H),
+                           FakePanel(config.SIDE_W, config.SIDE_H))
 
 
 @pytest.fixture

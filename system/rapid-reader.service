@@ -1,16 +1,26 @@
 [Unit]
-Description=Rapid Reader RSVP e-ink reader
-After=local-fs.target
+Description=Rapid Reader RSVP reader (Waveshare Zero LCD HAT)
+# Start as early as possible so the splash appears while the rest of the
+# system is still coming up; boot.py retries until the SPI/GPIO nodes exist.
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=multi-user.target
+Conflicts=shutdown.target
 
 [Service]
 Type=simple
 User=reader
 Group=reader
 SupplementaryGroups=spi gpio
-WorkingDirectory=/home/reader/ebooks
-ExecStart=/usr/bin/python3 /opt/rapid-reader/main.py
+# lgpio creates a .lgd-nfy* FIFO in the cwd on import; must be writable
+WorkingDirectory=/var/lib/rapid-reader
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/rapid-reader/boot.py
 Restart=on-failure
-RestartSec=5
+RestartSec=3
+# the app saves state and blanks the screens on SIGTERM
+KillSignal=SIGTERM
+TimeoutStopSec=8
 
 [Install]
 WantedBy=multi-user.target

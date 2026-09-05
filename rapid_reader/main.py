@@ -1,27 +1,35 @@
 #!/usr/bin/env python3
-"""Rapid Reader: RSVP speed reader for Pi Zero W + Adafruit 2.13" e-ink bonnet.
+"""Rapid Reader: RSVP speed reader for a Pi Zero W + Waveshare Zero LCD HAT (A).
 
-Controls (buttons 5 and 6 on the bonnet):
+Three screens: the centre 240x240 panel carries the content (words while
+reading, the library, the paused sentence); the two portrait 80x160 side
+panels carry peripheral cards -- progress on the left, speed or key hints
+on the right -- that only redraw when their content changes.
 
-  Library:  5 tap        move down
-            5 double     move up
-            6 tap        open book (resumes where you left off)
-            6 double     rescan library
-            5 hold       power-off prompt
+Controls (K1 is the upper key, K2 the lower one):
 
-  Reading:  6 tap        play / pause
-            5 tap        back one sentence
-            5 double     slower (-25 wpm)
-            6 double     faster (+25 wpm)
-            6 triple     forward one sentence
-            5 hold       save & back to library
+  Library:  K2 tap        move down
+            K2 double     move up
+            K1 tap        open book (resumes where you left off)
+            K1 double     rescan library
+            K2 hold       power-off prompt
 
-  Paused:   6 tap        play
-            5 tap        back one sentence
-            5 double     previous chapter (if detected)
-            6 double     next chapter (if detected)
-            6 triple     forward one sentence
-            5 hold       save & back to library
+  Reading:  K1 tap        pause
+            K2 tap        back one sentence
+            K2 double     slower (-25 wpm)
+            K1 double     faster (+25 wpm)
+            K1 triple     forward one sentence
+            K2 hold       save & back to library
+
+  Paused:   K1 tap        play
+            K2 tap        back one sentence
+            K2 double     previous chapter (if detected)
+            K1 double     next chapter (if detected)
+            K1 triple     forward one sentence
+            K2 hold       save & back to library
+
+Normally started via boot.py (which shows the splash first); running this
+file directly also works.
 """
 
 import bisect
@@ -39,11 +47,7 @@ import buttons
 import config
 import render
 import rsvp
-
-try:
-    from epd import EPD
-except ImportError:  # no spidev/gpiozero on this machine (tests, dev box)
-    EPD = None
+from display import open_display
 
 MENU, READING, PAUSED, CONFIRM_OFF, END = range(5)
 
@@ -52,6 +56,7 @@ class State:
     def __init__(self):
         self.wpm = config.DEFAULT_WPM
         self.positions = {}
+        self.totals = {}
         self.last_book = None
         self.in_book = False
         try:
@@ -59,6 +64,7 @@ class State:
                 data = json.load(f)
             self.wpm = int(data.get("wpm", self.wpm))
             self.positions = dict(data.get("positions", {}))
+            self.totals = dict(data.get("totals", {}))
             self.last_book = data.get("last_book")
             self.in_book = bool(data.get("in_book", False))
         except (OSError, ValueError):
@@ -70,6 +76,7 @@ class State:
             tmp = config.STATE_FILE + ".tmp"
             with open(tmp, "w") as f:
                 json.dump({"wpm": self.wpm, "positions": self.positions,
+                           "totals": self.totals,
                            "last_book": self.last_book,
                            "in_book": self.in_book}, f)
             os.replace(tmp, config.STATE_FILE)
@@ -81,11 +88,8 @@ class App:
     def __init__(self, display=None, button_cls=None):
         # display/button_cls are injectable so the app logic can run under
         # test (or on a dev box) without SPI/GPIO hardware
-        self.epd = display if display is not None else EPD()
+        self.display = display if display is not None else open_display()
         button_cls = button_cls or buttons.TapButton
-        # visible as soon as hardware init succeeds, in case anything below
-        # this crash-loops (e.g. group membership not applied yet on first boot)
-        self.epd.display_full(render.message(["Rapid Reader", "booting\u2026"]))
         self.events = queue.Queue()
         self.state = State()
         self.mode = MENU
@@ -96,12 +100,14 @@ class App:
         self.idx = 0
         self.words_since_save = 0
         self.refresh_secs = config.PANEL_REFRESH_SECS
-        self.btn5 = button_cls(config.PIN_BTN_5,
-                               lambda n: self.events.put(("5", n)),
-                               lambda: self.events.put(("hold5", 0)))
-        self.btn6 = button_cls(config.PIN_BTN_6,
-                               lambda n: self.events.put(("6", n)),
-                               lambda: self.events.put(("hold6", 0)))
+        self._side_keys = {}
+        self._sides_dim = None
+        self.key1 = button_cls(config.PIN_KEY1,
+                               lambda n: self.events.put(("A", n)),
+                               lambda: self.events.put(("holdA", 0)))
+        self.key2 = button_cls(config.PIN_KEY2,
+                               lambda n: self.events.put(("B", n)),
+                               lambda: self.events.put(("holdB", 0)))
 
     # ---- helpers ----------------------------------------------------
 
@@ -110,8 +116,39 @@ class App:
             return 0.0
         return min(1.0, self.idx / len(self.book.words))
 
-    def show_menu(self, note=None, full=True):
-        self.mode = MENU
+    def chapter_pos(self):
+        """(current chapter number, chapter count) or None if undetected."""
+        chapters = self.book.chapter_starts if self.book else []
+        if not chapters:
+            return None
+        return (bisect.bisect_right(chapters, self.idx), len(chapters))
+
+    def _side(self, which, key, make):
+        """Redraw a side card only when its content key changed."""
+        if self._side_keys.get(which) != key:
+            self._side_keys[which] = key
+            self.display.show(**{which: make()})
+
+    def _set_mode(self, mode):
+        self.mode = mode
+        dim = mode == READING
+        if dim != self._sides_dim:
+            self._sides_dim = dim
+            self.display.backlight(
+                sides=config.BL_SIDE_READING if dim else config.BL_SIDE)
+
+    def _progress_side(self):
+        words = len(self.book.words)
+        remaining = words - self.idx
+        wpm = self.state.wpm
+        chapter = self.chapter_pos()
+        key = ("progress", int(self.progress() * 100), int(remaining / wpm),
+               chapter)
+        self._side("left", key, lambda: render.progress_card(
+            self.progress(), remaining, wpm, chapter))
+
+    def show_menu(self, note=None):
+        self._set_mode(MENU)
         titles = [t for t, _ in self.library]
         if self.sel >= len(titles):
             self.sel = max(0, len(titles) - 1)
@@ -119,8 +156,18 @@ class App:
             self.top = self.sel
         elif self.sel >= self.top + render.MENU_ROWS:
             self.top = self.sel - render.MENU_ROWS + 1
-        img = render.menu(titles, self.sel, self.top, note)
-        (self.epd.display_full if full else self.epd.display_partial)(img)
+        self.display.show(main=render.menu(titles, self.sel, self.top, note))
+        if titles:
+            title, path = self.library[self.sel]
+            ext = os.path.splitext(path)[1]
+            pos = self.state.positions.get(path)
+            total = self.state.totals.get(path)
+            self._side("left", ("book", path, pos, total, self.state.wpm),
+                       lambda: render.book_card(title, ext, pos, total,
+                                                self.state.wpm))
+        else:
+            self._side("left", ("blank",), render.blank_side)
+        self._side("right", ("hints", "menu"), lambda: render.hints("menu"))
 
     def rescan(self):
         self.library = books.scan_library()
@@ -134,7 +181,7 @@ class App:
         if not self.library:
             return
         title, path = self.library[self.sel]
-        self.epd.display_full(render.message(["Loading\u2026", title[:24]]))
+        self.display.show(main=render.message([title], big="Loading\u2026"))
         try:
             self.book = books.Book.load(path)
         except Exception:
@@ -142,13 +189,15 @@ class App:
             self.show_menu(note="load failed")
             return
         if not self.book.words:
+            self.book = None
             self.show_menu(note="empty book")
             return
         self.idx = min(self.state.positions.get(path, 0),
                        len(self.book.words) - 1)
+        self.state.totals[path] = len(self.book.words)
         self.state.last_book = path
         self.state.in_book = True
-        self.show_paused(full=True)
+        self.show_paused()
 
     def save_position(self):
         if self.book:
@@ -178,6 +227,9 @@ class App:
         self.state.wpm = max(config.MIN_WPM,
                              min(config.MAX_WPM, self.state.wpm + delta))
         self.state.save()
+        if self.mode == READING:
+            self._side("right", ("speed", self.state.wpm),
+                       lambda: render.speed_card(self.state.wpm))
 
     def jump_chapter(self, direction):
         chapters = self.book.chapter_starts
@@ -192,15 +244,21 @@ class App:
         else:
             j = bisect.bisect_right(chapters, self.idx)
             self.idx = (chapters[j] if j < len(chapters)
-                       else len(self.book.words) - 1)
+                        else len(self.book.words) - 1)
 
-    def show_paused(self, full=False):
-        self.mode = PAUSED
-        img = render.paused(self.book.title, self.book.words, self.idx,
-                            self.sentence_start(self.idx), self.state.wpm,
-                            self.progress())
-        (self.epd.display_full if full else self.epd.display_partial)(img)
+    def show_paused(self):
+        self._set_mode(PAUSED)
+        self.display.show(main=render.paused(
+            self.book.title, self.book.words, self.idx,
+            self.sentence_start(self.idx), self.state.wpm, self.progress()))
+        self._progress_side()
+        self._side("right", ("hints", "paused"), lambda: render.hints("paused"))
         self.save_position()
+
+    def start_reading(self):
+        self._set_mode(READING)
+        self._side("right", ("speed", self.state.wpm),
+                   lambda: render.speed_card(self.state.wpm))
 
     def leave_to_menu(self):
         self.state.in_book = False
@@ -208,6 +266,23 @@ class App:
         self.book = None
         self.rescan()
         self.show_menu()
+
+    def show_end(self):
+        self._set_mode(END)
+        self.display.show(main=render.the_end(self.book.title))
+        self._progress_side()
+        self._side("right", ("hints", "end"), lambda: render.hints("end"))
+
+    def power_off(self):
+        self.display.show(main=render.message(["Powering off\u2026"],
+                                              hint="safe to unplug when dark"),
+                          left=render.blank_side(), right=render.blank_side())
+        self._side_keys.clear()
+        self.state.save()
+        argv = ["poweroff"] if os.geteuid() == 0 else ["sudo", "-n", "poweroff"]
+        rc = subprocess.call(argv)
+        if rc != 0:
+            self.show_menu(note="power-off failed")
 
     # ---- playback ---------------------------------------------------
 
@@ -218,8 +293,8 @@ class App:
         total_delay = rsvp.word_delay(words[start], self.state.wpm,
                                       start in para_ends)
         end = start
-        # pull in more words if the panel can't refresh fast enough to keep
-        # up with the requested wpm, so the average pace still matches it
+        # pull in more words if a frame takes longer than one word's slot,
+        # so the average pace still matches the requested wpm
         while total_delay < self.refresh_secs and end + 1 < len(words):
             end += 1
             chunk.append(words[end])
@@ -227,10 +302,10 @@ class App:
                                            end in para_ends)
 
         t0 = time.monotonic()
-        img = (render.word_frame(chunk[0], self.state.wpm, self.progress())
-              if len(chunk) == 1 else
-              render.chunk_frame(chunk, self.state.wpm, self.progress()))
-        self.epd.display_partial(img)
+        img = (render.word_frame(chunk[0]) if len(chunk) == 1
+               else render.chunk_frame(chunk))
+        self.display.show(main=img)
+        self._progress_side()
         elapsed = time.monotonic() - t0
         self.refresh_secs = 0.8 * self.refresh_secs + 0.2 * elapsed
 
@@ -239,11 +314,10 @@ class App:
         if self.words_since_save >= config.SAVE_EVERY_WORDS:
             self.save_position()
         if self.idx >= len(words):
-            self.mode = END
             self.idx = len(words) - 1
             self.state.in_book = False
             self.save_position()
-            self.epd.display_full(render.the_end(self.book.title))
+            self.show_end()
             return
         remaining = total_delay - elapsed
         if remaining > 0:
@@ -254,64 +328,60 @@ class App:
     def handle(self, ev):
         kind, n = ev
         if self.mode == MENU:
-            if kind == "5" and n == 1 and self.library:
+            if kind == "B" and n == 1 and self.library:
                 self.sel = (self.sel + 1) % len(self.library)
-                self.show_menu(full=False)
-            elif kind == "5" and n >= 2 and self.library:
+                self.show_menu()
+            elif kind == "B" and n >= 2 and self.library:
                 self.sel = (self.sel - 1) % len(self.library)
-                self.show_menu(full=False)
-            elif kind == "6" and n == 1:
+                self.show_menu()
+            elif kind == "A" and n == 1:
                 self.open_book()
-            elif kind == "6" and n >= 2:
+            elif kind == "A" and n >= 2:
                 self.rescan()
                 self.show_menu(note="rescanned")
-            elif kind == "hold5":
-                self.mode = CONFIRM_OFF
-                self.epd.display_full(render.confirm_power())
+            elif kind == "holdB":
+                self._set_mode(CONFIRM_OFF)
+                self.display.show(main=render.confirm_power())
+                self._side("left", ("blank",), render.blank_side)
+                self._side("right", ("hints", "confirm"),
+                           lambda: render.hints("confirm"))
 
         elif self.mode == CONFIRM_OFF:
-            if kind == "6":
-                self.epd.display_full(
-                    render.message(["Powered off", "Safe to unplug"]))
-                self.state.save()
-                self.epd.sleep()
-                if os.geteuid() == 0:
-                    subprocess.call(["poweroff"])
-                else:
-                    subprocess.call(["sudo", "-n", "poweroff"])
+            if kind == "A":
+                self.power_off()
             else:
                 self.show_menu()
 
         elif self.mode == READING:
-            if kind == "6" and n == 1:
-                self.show_paused(full=True)
-            elif kind == "6" and n == 2:
+            if kind == "A" and n == 1:
+                self.show_paused()
+            elif kind == "A" and n == 2:
                 self.change_wpm(config.WPM_STEP)
-            elif kind == "6" and n >= 3:
+            elif kind == "A" and n >= 3:
                 self.jump_sentence(+1)
-            elif kind == "5" and n == 1:
+            elif kind == "B" and n == 1:
                 self.jump_sentence(-1)
-            elif kind == "5" and n == 2:
+            elif kind == "B" and n == 2:
                 self.change_wpm(-config.WPM_STEP)
-            elif kind == "hold5":
+            elif kind == "holdB":
                 self.leave_to_menu()
 
         elif self.mode == PAUSED:
-            if kind == "6" and n == 1:
-                self.mode = READING
-            elif kind == "6" and n == 2:
+            if kind == "A" and n == 1:
+                self.start_reading()
+            elif kind == "A" and n == 2:
                 self.jump_chapter(+1)
                 self.show_paused()
-            elif kind == "6" and n >= 3:
+            elif kind == "A" and n >= 3:
                 self.jump_sentence(+1)
                 self.show_paused()
-            elif kind == "5" and n == 1:
+            elif kind == "B" and n == 1:
                 self.jump_sentence(-1)
                 self.show_paused()
-            elif kind == "5" and n == 2:
+            elif kind == "B" and n == 2:
                 self.jump_chapter(-1)
                 self.show_paused()
-            elif kind == "hold5":
+            elif kind == "holdB":
                 self.leave_to_menu()
 
         elif self.mode == END:
@@ -340,12 +410,18 @@ class App:
                 self.handle(ev)
 
 
-def main():
+def main(display=None):
     os.makedirs(config.STATE_DIR, exist_ok=True)
-    app = App()
+    if display is None:
+        display = open_display()
+    app = App(display=display)
 
     def bail(signum, frame):
         app.save_position() if app.book else app.state.save()
+        try:
+            display.sleep()      # screens go dark as the system shuts down
+        except Exception:
+            pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, bail)
@@ -354,12 +430,13 @@ def main():
     except Exception:
         traceback.print_exc()
         try:
-            app.epd.display_full(render.message(
-                ["Error \u2014 restarting", "see: journalctl -u rapid-reader"]))
+            display.show(main=render.message(
+                ["Error \u2014 restarting", "journalctl -u rapid-reader"]))
         except Exception:
             pass
         raise
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     main()

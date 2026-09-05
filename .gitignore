@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 sdcard_build/*.img*
 mount/
+rapid_reader/splash/

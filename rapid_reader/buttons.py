@@ -1,4 +1,4 @@
-"""Multi-tap + hold detection for the two bonnet buttons."""
+"""Multi-tap + hold detection for the HAT's two keys (K1/K2)."""
 
 import threading
 

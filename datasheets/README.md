@@ -15,6 +15,11 @@ each is listed so it can be re-fetched or checked for newer revisions.
 Raspberry Pi does not publish a separate "datasheet"/product brief PDF for
 the Zero W; the product page is <https://www.raspberrypi.com/products/raspberry-pi-zero-w/>.
 
+User documentation (getting started, OS install, GPIO/SPI usage, config.txt,
+boot options) is web-based, not a downloadable PDF:
+<https://www.raspberrypi.com/documentation/computers/raspberry-pi.html>
+<https://www.raspberrypi.com/documentation/computers/getting-started.html>
+
 ## Waveshare Zero LCD HAT (A) — `waveshare-zero-lcd-hat-a/`
 
 Wiki (pinout, demo download, FAQ): <https://www.waveshare.com/wiki/Zero_LCD_HAT_(A)>
@@ -27,6 +32,10 @@ Wiki (pinout, demo download, FAQ): <https://www.waveshare.com/wiki/Zero_LCD_HAT_
 | `0.96inch_LCD_Module-Datasheet.pdf` (160×80 panel module) | <https://files.waveshare.com/wiki/Zero-LCD-HAT-A/0.96inch_LCD_Module-Datasheet.pdf> |
 | `ST7789VW-Datasheet.pdf` (controller of the 1.3" panel) | <https://files.waveshare.com/upload/a/ad/ST7789VW.pdf> |
 | `ST7735S-Datasheet-V1.1.pdf` (controller of the 0.96" panels) | <https://www.waveshare.com/w/upload/e/e2/ST7735S_V1.1_20111121.pdf> |
+
+Waveshare does not publish a separate PDF "manual" either; the wiki page
+linked above *is* the user manual (specs, pinout, SPI/library setup,
+demo download, framebuffer/desktop setup, FAQ).
 
 The vendor demo code (`Zero_LCD_HAT_A_Demo.zip`, linked from the wiki) is
 not committed here; the init sequences it uses were transcribed into
