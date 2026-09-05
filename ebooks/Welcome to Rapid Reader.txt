@@ -1,0 +1,34 @@
+Welcome to Rapid Reader.
+
+This device shows books one word at a time, a technique called Rapid
+Serial Visual Presentation. Because your eyes never move, you can read
+much faster than on paper. The bold letter with the small marks above
+and below it is the Optimal Recognition Point. Keep your gaze fixed
+there and let the words come to you.
+
+Right now you are reading in RSVP mode. Press button six once to
+pause. Pausing shows the whole sentence, so you never lose your place.
+Press six again to resume.
+
+Press button five once to jump back one sentence. Double-tap five to
+slow down. Double-tap six to speed up. Triple-tap six to skip ahead
+one sentence. Hold five for two seconds to save your spot and return
+to the library.
+
+In the library, tap five to move down and double-tap five to move up.
+Tap six to open the selected book. Your position in every book is
+saved automatically, so you can switch between books freely.
+
+To add books, connect to this device over your network and copy plain
+text or epub files into the ebooks folder. The address is shown in the
+manual that came with this card.
+
+When you are done reading, hold five in the library and confirm with
+six to power down safely. The screen keeps its last image even with
+the power off; that is normal for electronic ink.
+
+Start slow. One hundred fifty words per minute feels brisk at first.
+As your brain adapts, nudge the speed up. Comprehension usually holds
+surprisingly well up to double your normal reading speed.
+
+Happy reading.

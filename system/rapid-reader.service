@@ -1,0 +1,16 @@
+[Unit]
+Description=Rapid Reader RSVP e-ink reader
+After=local-fs.target
+
+[Service]
+Type=simple
+User=reader
+Group=reader
+SupplementaryGroups=spi gpio
+WorkingDirectory=/home/reader/ebooks
+ExecStart=/usr/bin/python3 /opt/rapid-reader/main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
