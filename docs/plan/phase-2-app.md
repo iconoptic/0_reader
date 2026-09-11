@@ -1,10 +1,35 @@
 # Phase 2 — App (integration)
 
-**Status:** not started. **Depends on:** all of Phase 1 (1A/1B/1C/1D) and
-Phase 0. **Recommendation:** run this on a stronger/more capable model,
-not the nimble tier used for Phase 1 — see the note in
-[`docs/plan/README.md`](README.md) and "On sub-tasking this nimbly" below
-before deciding how to execute it.
+**Status:** superseded as an execution prompt — kept as the design
+reference for the architecture and the full screen table. Phases 0/1A/
+1B/1C/1D have landed (see
+[`corrections-phase-0-1.md`](corrections-phase-0-1.md) for the post-
+landing review and two small fixes). Phase 2 itself is now split into
+four nimble-sized prompts that supersede "On sub-tasking this nimbly"
+below:
+
+- [`phase-2a-core.md`](phase-2a-core.md) — `App` skeleton + Library/
+  Reading/Paused/End/Message/Confirm screens. Run first.
+- [`phase-2b-book-nav.md`](phase-2b-book-nav.md) — Chapters/Bookmarks/
+  Book info. Depends on 2A.
+- [`phase-2c-settings-system.md`](phase-2c-settings-system.md) —
+  Settings/Themes/Display/System. Depends on 2A; independent of 2B.
+- [`phase-2d-integration.md`](phase-2d-integration.md) — verification/
+  cleanup pass. Depends on 2A+2B+2C. Run this one on a stronger model,
+  same rationale as this file's original recommendation below, just
+  scoped down to a checklist instead of the whole phase.
+
+The rest of this file (architecture, the `App` code sample, the full
+screen table) is left as-is below as shared background/rationale for
+those four docs — the 2A-2D docs are the authoritative, current task
+prompts; where they differ from this file (e.g. the `MainMenuScreen`/
+`BookMenuScreen` naming below was collapsed into one `BookMenuScreen` in
+2A), the split docs win.
+
+**Original recommendation (superseded by the split above):** run this on
+a stronger/more capable model, not the nimble tier used for Phase 1 — see
+the note in [`docs/plan/README.md`](README.md) and "On sub-tasking this
+nimbly" below before deciding how to execute it.
 
 ## Why this phase is different from the other five
 
@@ -334,6 +359,16 @@ theme-aware calls.
 
 ## On sub-tasking this nimbly
 
+**This section is superseded by the actual split:**
+[`phase-2a-core.md`](phase-2a-core.md), [`phase-2b-book-nav.md`](phase-2b-book-nav.md),
+[`phase-2c-settings-system.md`](phase-2c-settings-system.md),
+[`phase-2d-integration.md`](phase-2d-integration.md). The idea sketched
+below (App skeleton first, screens second) is exactly what those four
+docs now do, fully specified rather than left as a sketch.
+
+<details>
+<summary>Original sketch (kept for history)</summary>
+
 If you do want to break this phase down for smaller/faster agents instead
 of one capable agent doing the whole thing, the least-risky split is:
 
@@ -349,6 +384,8 @@ of one capable agent doing the whole thing, the least-risky split is:
 Do not attempt to parallelize 2A and 2B — screens genuinely need the
 `App` methods they call (`push`/`pop`/`replace_top`/`change_wpm`/
 `jump_sentence`/`jump_chapter`/`apply_theme`) to exist first.
+
+</details>
 
 ## Tests
 

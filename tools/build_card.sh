@@ -99,10 +99,11 @@ sed -i -E 's/^(dtparam=audio=on|camera_auto_detect=1|display_auto_detect=1|dtove
 cat >> "$CFG" <<'EOF'
 
 [all]
-# --- Rapid Reader: Waveshare Zero LCD HAT (A) ---
+# --- Rapid Reader: 1.3" SH1106 OLED HAT (joystick + 3 buttons) ---
 dtparam=spi=on
-# 1.3" main screen sits on SPI1 CE0 (GPIO18); the 0.96" sides on SPI0 CE0/CE1
-dtoverlay=spi1-1cs
+# Pull-ups for all 8 inputs (joystick up/down/left/right/press + K1/K2/K3;
+# BCM pins from config.PINS) so lines read cleanly before gpiozero configures them
+gpio=6,19,5,26,13,21,20,16=pu
 # free the PL011 UART / save boot time; bluetooth is unused
 dtoverlay=disable-bt
 disable_splash=1
@@ -113,6 +114,7 @@ CMD=$BOOT/cmdline.txt
 c=$(cat "$CMD")
 c=${c//console=serial0,115200 /}
 c=${c// resize/}
+# spidev.bufsiz kept at 65536 (oversized for SH1106's ~1 KiB frames; harmless)
 c="$c quiet loglevel=3 spidev.bufsiz=65536 cfg80211.ieee80211_regdom=$WIFI_COUNTRY"
 printf '%s\n' "$c" > "$CMD"
 # cloud-init seed files from the stock image: we configure everything statically
@@ -232,7 +234,11 @@ if [[ -f $ROOT/etc/wpa_supplicant/wpa_supplicant.conf ]] && ! grep -q '^country=
 fi
 
 # persistent journal so a bad boot can be read off the card afterwards
-install -d -m 2755 -o 0 -g systemd-journal "$ROOT/var/log/journal" 2>/dev/null || install -d -m 2755 "$ROOT/var/log/journal"
+# (must resolve the "systemd-journal" group *inside* the target chroot --
+# resolving it against the host's /etc/group, as a plain host-side
+# `install -g systemd-journal` would, can silently write the wrong GID and
+# leave journald unable to use persistent storage)
+inchroot install -d -m 2755 -o 0 -g systemd-journal /var/log/journal
 install -d "$ROOT/etc/systemd/journald.conf.d"
 printf '[Journal]\nStorage=persistent\nSystemMaxUse=32M\n' > "$ROOT/etc/systemd/journald.conf.d/10-persistent.conf"
 
@@ -271,21 +277,24 @@ fi
 # ---------------------------------------------------------------- verify
 log "verifying"
 diff -r -x '__pycache__' -x '*.pyc' -x splash "$HERE/rapid_reader" "$ROOT/opt/rapid-reader" && echo "app files match repo"
-for f in main left right; do [[ -s $ROOT/opt/rapid-reader/splash/$f.rgb565 ]] || die "missing splash $f"; done
+SPLASH_BIN=$ROOT/opt/rapid-reader/splash/splash.bin
+SPLASH_SIZE=$(stat -c%s "$SPLASH_BIN" 2>/dev/null || echo 0)
+[[ $SPLASH_SIZE -eq 1024 ]] || die "splash.bin missing or wrong size ($SPLASH_SIZE bytes, expected 1024)"
 [[ -L $ROOT/etc/systemd/system/multi-user.target.wants/rapid-reader.service ]] || die "service not enabled"
 # import everything under the target's own python (via qemu) as the reader
 # user, from the service's working directory (lgpio drops a FIFO in the cwd)
 inchroot su -s /bin/sh reader -c 'cd /var/lib/rapid-reader && timeout 120 python3 - <<"PY"
 import sys; sys.path.insert(0, "/opt/rapid-reader")
 import PIL, spidev, gpiozero, lgpio
-import config, lcd, display, render, rsvp, books, main
-img = render.word_frame("verify")
-assert img.size == (config.MAIN_W, config.MAIN_H)
-assert len(lcd.rgb565(img)) == config.MAIN_W * config.MAIN_H * 2
+import config, oled, display, render, rsvp, books, theme, main
+img = render.word_frame("verify", theme.THEMES[theme.DEFAULT_THEME_KEY])
+assert img.size == (config.OLED_W, config.OLED_H)
+mode1 = img.point(lambda p: 255 if p >= 128 else 0, mode="1")
+assert len(oled.pack_pages(mode1)) == config.OLED_W * config.OLED_H // 8
 print("target python", sys.version.split()[0], "PIL", PIL.__version__, "OK")
 PY'
 rm -f "$ROOT"/var/lib/rapid-reader/.lgd-nfy*
-grep -E '^(dtparam=spi=on|dtoverlay=spi1-1cs)$' "$CFG" >/dev/null || die "config.txt missing SPI settings"
+grep -E '^(dtparam=spi=on|gpio=6,19,5,26,13,21,20,16=pu)$' "$CFG" >/dev/null || die "config.txt missing SPI/GPIO settings"
 grep -q 'spidev.bufsiz' "$CMD" || die "cmdline not updated"
 echo "hostname: $(cat "$ROOT/etc/hostname")  user: $(inchroot id reader)"
 echo "wifi profiles: $(ls "$ROOT/etc/NetworkManager/system-connections" 2>/dev/null | wc -l)"

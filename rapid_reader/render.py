@@ -226,9 +226,9 @@ def _two_line_word(img, d, word, orp, theme):
     return img
 
 
-def _fit_chunk_orp(d, words, theme):
+def _fit_chunk_orp(d, words, theme, word_size=None):
     """Largest size where every word's ORP pieces fit on one line, or None."""
-    sizes = _WORD_SIZE_TIERS["medium"]
+    sizes = _WORD_SIZE_TIERS.get(word_size, _WORD_SIZE_TIERS["medium"])
     for size in sizes:
         reg = themes.font(theme, size)
         bold = themes.font(theme, size, bold=True)
@@ -248,13 +248,13 @@ def _fit_chunk_orp(d, words, theme):
     return None
 
 
-def chunk_frame(words, theme):
+def chunk_frame(words, theme, word_size=None):
     """2+ words at once when wpm outpaces the frame rate."""
     img, d = _canvas()
-    fitted = _fit_chunk_orp(d, words, theme)
+    fitted = _fit_chunk_orp(d, words, theme, word_size)
     if fitted is None:
         text = " ".join(words)
-        sizes = _WORD_SIZE_TIERS["medium"]
+        sizes = _WORD_SIZE_TIERS.get(word_size, _WORD_SIZE_TIERS["medium"])
         fnt = themes.font(theme, sizes[-1])
         for size in sizes:
             fnt = themes.font(theme, size)

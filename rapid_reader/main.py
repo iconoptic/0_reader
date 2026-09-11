@@ -1,273 +1,154 @@
 #!/usr/bin/env python3
-"""Rapid Reader: RSVP speed reader for a Pi Zero W + Waveshare Zero LCD HAT (A).
+"""Rapid Reader: RSVP speed reader for a Pi Zero W + SH1106 OLED HAT.
 
-Three screens: the centre 240x240 panel carries the content (words while
-reading, the library, the paused sentence); the two portrait 80x160 side
-panels carry peripheral cards -- progress on the left, speed or key hints
-on the right -- that only redraw when their content changes.
+Single 128x64 panel. Navigation is a screen stack (library, reading,
+paused, book menu, dialogs). Controls:
 
-Controls (K1 is the upper key, K2 the lower one):
+  Library:  up/down       move selection (repeats)
+            left/right    page (repeats)
+            press         open book
+            K1 hold       power-off confirm
+            K2            menu (Settings / System)
+            K3            book info
+            K1 tap        no-op at root
 
-  Library:  K2 tap        move down
-            K2 double     move up
-            K1 tap        open book (resumes where you left off)
-            K1 double     rescan library
-            K2 hold       power-off prompt
+  Reading:  press / K3    pause
+            up/down       wpm +/- WPM_STEP
+            left/right    jump sentence
+            K1            save & library
+            K2            book menu
 
-  Reading:  K1 tap        pause
-            K2 tap        back one sentence
-            K2 double     slower (-25 wpm)
-            K1 double     faster (+25 wpm)
-            K1 triple     forward one sentence
-            K2 hold       save & back to library
-
-  Paused:   K1 tap        play
-            K2 tap        back one sentence
-            K2 double     previous chapter (if detected)
-            K1 double     next chapter (if detected)
-            K1 triple     forward one sentence
-            K2 hold       save & back to library
+  Paused:   same as Reading, plus left/right hold/repeat = jump chapter
 
 Normally started via boot.py (which shows the splash first); running this
 file directly also works.
 """
 
 import bisect
-import json
 import os
 import queue
 import signal
-import subprocess
 import sys
-import threading
 import time
 import traceback
 
-try:
-    from gpiozero import Button as _GpioButton
-except ImportError:  # tests / dev box without GPIO
-    _GpioButton = None
-
 import books
+import buttons
 import config
+import display as oled_display
 import render
 import rsvp
-from display import open_display
-
-MENU, READING, PAUSED, CONFIRM_OFF, END = range(5)
-
-
-class _LegacyMultiTap:
-    """Temporary two-key multi-tap/hold helper for the LCD App (Phase 2
-    replaces this with buttons.Input). Kept here so the Phase 1B Key/Input
-    rewrite does not break the current App/tests."""
-
-    def __init__(self, pin, on_taps, on_hold=None, button=None):
-        self.on_taps = on_taps
-        self.on_hold = on_hold
-        self._count = 0
-        self._timer = None
-        self._held = False
-        self._lock = threading.Lock()
-        if button is None:
-            button = _GpioButton(pin, pull_up=True, bounce_time=0.03,
-                                 hold_time=config.HOLD_TIME)
-        self.btn = button
-        self.btn.when_pressed = self._pressed
-        self.btn.when_held = self._on_held
-        self.btn.when_released = self._released
-
-    def _pressed(self):
-        with self._lock:
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
-
-    def _on_held(self):
-        with self._lock:
-            self._held = True
-            self._count = 0
-        if self.on_hold:
-            self.on_hold()
-
-    def _released(self):
-        fire_later = False
-        with self._lock:
-            if self._held:
-                self._held = False
-                return
-            self._count += 1
-            self._timer = threading.Timer(config.TAP_WINDOW, self._finalize)
-            self._timer.daemon = True
-            fire_later = True
-        if fire_later:
-            self._timer.start()
-
-    def _finalize(self):
-        with self._lock:
-            n = self._count
-            self._count = 0
-            self._timer = None
-        if n and self.on_taps:
-            self.on_taps(n)
-
-
-
-
-
-class State:
-    def __init__(self):
-        self.wpm = config.DEFAULT_WPM
-        self.positions = {}
-        self.totals = {}
-        self.last_book = None
-        self.in_book = False
-        try:
-            with open(config.STATE_FILE) as f:
-                data = json.load(f)
-            self.wpm = int(data.get("wpm", self.wpm))
-            self.positions = dict(data.get("positions", {}))
-            self.totals = dict(data.get("totals", {}))
-            self.last_book = data.get("last_book")
-            self.in_book = bool(data.get("in_book", False))
-        except (OSError, ValueError):
-            pass
-
-    def save(self):
-        try:
-            os.makedirs(config.STATE_DIR, exist_ok=True)
-            tmp = config.STATE_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump({"wpm": self.wpm, "positions": self.positions,
-                           "totals": self.totals,
-                           "last_book": self.last_book,
-                           "in_book": self.in_book}, f)
-            os.replace(tmp, config.STATE_FILE)
-        except OSError:
-            traceback.print_exc()
+import screens
+import state
+import theme
 
 
 class App:
-    def __init__(self, display=None, button_cls=None):
-        # display/button_cls are injectable so the app logic can run under
-        # test (or on a dev box) without SPI/GPIO hardware
-        self.display = display if display is not None else open_display()
-        button_cls = button_cls or _LegacyMultiTap
+    def __init__(self, display=None, input_cls=None):
+        self.display = display if display is not None else oled_display.open_display()
         self.events = queue.Queue()
-        self.state = State()
-        self.mode = MENU
-        self.library = []
-        self.sel = 0
-        self.top = 0
-        self.book = None
+        self.input = (input_cls or buttons.Input)(self._on_event)
+        self.state = state.State()
+        self.theme = theme.THEMES.get(self.state.settings["theme"],
+                                       theme.THEMES[theme.DEFAULT_THEME_KEY])
+        self.book = None            # books.Book, set when a book is open
         self.idx = 0
+        self.stack = []              # list[contracts.Screen]; stack[-1] is active
         self.words_since_save = 0
         self.refresh_secs = config.PANEL_REFRESH_SECS
-        self._side_keys = {}
-        self._sides_dim = None
-        self.key1 = button_cls(config.PIN_KEY1,
-                               lambda n: self.events.put(("A", n)),
-                               lambda: self.events.put(("holdA", 0)))
-        self.key2 = button_cls(config.PIN_KEY2,
-                               lambda n: self.events.put(("B", n)),
-                               lambda: self.events.put(("holdB", 0)))
+        self._last_input_at = time.monotonic()
+        self._idle_state = "active"  # "active" | "dim" | "off"
+        self._flash_text = None
+        self._flash_until = 0.0
+        self._reading_since = None
+        self.display.invert(self.theme.invert)
+        self.display.contrast(self.theme.contrast)
 
-    # ---- helpers ----------------------------------------------------
+    def _on_event(self, name, kind):
+        self.events.put((name, kind))
 
-    def progress(self):
-        if not self.book or not self.book.words:
-            return 0.0
-        return min(1.0, self.idx / len(self.book.words))
+    # ---- navigation ----
+    def push(self, screen):
+        if self.stack:
+            self.stack[-1].on_exit(self)
+        self.stack.append(screen)
+        screen.on_enter(self)
+        self.redraw()
 
-    def chapter_pos(self):
-        """(current chapter number, chapter count) or None if undetected."""
-        chapters = self.book.chapter_starts if self.book else []
-        if not chapters:
-            return None
-        return (bisect.bisect_right(chapters, self.idx), len(chapters))
+    def pop(self):
+        if len(self.stack) <= 1:
+            return   # library root: never pop past it
+        old = self.stack.pop()
+        old.on_exit(self)
+        self.stack[-1].on_enter(self)
+        self.redraw()
 
-    def _side(self, which, key, make):
-        """Redraw a side card only when its content key changed."""
-        if self._side_keys.get(which) != key:
-            self._side_keys[which] = key
-            self.display.show(**{which: make()})
+    def pop_to_root(self):
+        # Exit every screen above the root without redrawing intermediates
+        # (leave_to_library clears self.book before this runs).
+        while len(self.stack) > 1:
+            old = self.stack.pop()
+            old.on_exit(self)
+        if self.stack:
+            self.stack[-1].on_enter(self)
+            self.redraw()
 
-    def _set_mode(self, mode):
-        self.mode = mode
-        dim = mode == READING
-        if dim != self._sides_dim:
-            self._sides_dim = dim
-            self.display.backlight(
-                sides=config.BL_SIDE_READING if dim else config.BL_SIDE)
+    def pop_to(self, screen_cls):
+        """Pop until the top of the stack is an instance of screen_cls
+        (inclusive check on the *next* one down); used by book-navigation
+        screens to return to Paused after jumping. Assumes screen_cls is
+        somewhere on the stack (true for every current call site)."""
+        while len(self.stack) > 1 and not isinstance(self.stack[-1], screen_cls):
+            self.pop()
+        self.redraw()
 
-    def _progress_side(self):
-        words = len(self.book.words)
-        remaining = words - self.idx
-        wpm = self.state.wpm
-        chapter = self.chapter_pos()
-        key = ("progress", int(self.progress() * 100), int(remaining / wpm),
-               chapter)
-        self._side("left", key, lambda: render.progress_card(
-            self.progress(), remaining, wpm, chapter))
+    def replace_top(self, screen):
+        """Swap the active screen without growing the stack -- used only
+        for the Reading<->Paused toggle, which is the same open book at
+        the same navigation depth, not a new destination."""
+        if self.stack:
+            self.stack[-1].on_exit(self)
+        self.stack[-1] = screen
+        screen.on_enter(self)
+        self.redraw()
 
-    def show_menu(self, note=None):
-        self._set_mode(MENU)
-        titles = [t for t, _ in self.library]
-        if self.sel >= len(titles):
-            self.sel = max(0, len(titles) - 1)
-        if self.sel < self.top:
-            self.top = self.sel
-        elif self.sel >= self.top + render.MENU_ROWS:
-            self.top = self.sel - render.MENU_ROWS + 1
-        self.display.show(main=render.menu(titles, self.sel, self.top, note))
-        if titles:
-            title, path = self.library[self.sel]
-            ext = os.path.splitext(path)[1]
-            pos = self.state.positions.get(path)
-            total = self.state.totals.get(path)
-            self._side("left", ("book", path, pos, total, self.state.wpm),
-                       lambda: render.book_card(title, ext, pos, total,
-                                                self.state.wpm))
-        else:
-            self._side("left", ("blank",), render.blank_side)
-        self._side("right", ("hints", "menu"), lambda: render.hints("menu"))
+    # ---- rendering ----
+    def redraw(self):
+        img = self.stack[-1].frame(self)
+        self.display.show(img)
 
-    def rescan(self):
-        self.library = books.scan_library()
-        if self.state.last_book:
-            for i, (_, p) in enumerate(self.library):
-                if p == self.state.last_book:
-                    self.sel = i
-                    break
-
-    def open_book(self):
-        if not self.library:
-            return
-        title, path = self.library[self.sel]
-        self.display.show(main=render.message([title], big="Loading\u2026"))
-        try:
-            self.book = books.Book.load(path)
-        except Exception:
-            traceback.print_exc()
-            self.show_menu(note="load failed")
-            return
-        if not self.book.words:
-            self.book = None
-            self.show_menu(note="empty book")
-            return
-        self.idx = min(self.state.positions.get(path, 0),
-                       len(self.book.words) - 1)
-        self.state.totals[path] = len(self.book.words)
-        self.state.last_book = path
-        self.state.in_book = True
-        self.show_paused()
-
-    def save_position(self):
-        if self.book:
-            self.state.positions[self.book.path] = self.idx
+    # ---- theme / idle ----
+    def apply_theme(self, theme_key):
+        self.theme = theme.THEMES[theme_key]
+        self.state.settings["theme"] = theme_key
+        self.display.invert(self.theme.invert)
+        self.display.contrast(self.theme.contrast)
         self.state.save()
-        self.words_since_save = 0
+        self.redraw()
 
+    def _tick_idle(self):
+        idle_for = time.monotonic() - self._last_input_at
+        reading = self.stack and isinstance(self.stack[-1], screens.ReadingScreen)
+        if reading:
+            target = "active"
+        elif idle_for >= config.IDLE_OFF_SECS:
+            target = "off"
+        elif idle_for >= config.IDLE_DIM_SECS:
+            target = "dim"
+        else:
+            target = "active"
+        if target != self._idle_state:
+            self._idle_state = target
+            if target == "off":
+                self.display.sleep()
+            elif target == "dim":
+                self.display.wake()
+                self.display.contrast(config.IDLE_DIM_CONTRAST)
+            else:
+                self.display.wake()
+                self.display.contrast(self.theme.contrast)
+
+    # ---- playback ----
     def sentence_start(self, idx):
         starts = self.book.sentence_starts
         i = bisect.bisect_right(starts, idx) - 1
@@ -277,7 +158,6 @@ class App:
         starts = self.book.sentence_starts
         cur = self.sentence_start(self.idx)
         if direction < 0:
-            # if we just started this sentence, go to the previous one
             if self.idx - cur < 3:
                 i = bisect.bisect_left(starts, cur) - 1
                 cur = starts[max(0, i)]
@@ -285,14 +165,7 @@ class App:
         else:
             i = bisect.bisect_right(starts, self.idx)
             self.idx = starts[i] if i < len(starts) else len(self.book.words) - 1
-
-    def change_wpm(self, delta):
-        self.state.wpm = max(config.MIN_WPM,
-                             min(config.MAX_WPM, self.state.wpm + delta))
-        self.state.save()
-        if self.mode == READING:
-            self._side("right", ("speed", self.state.wpm),
-                       lambda: render.speed_card(self.state.wpm))
+        self.redraw()
 
     def jump_chapter(self, direction):
         chapters = self.book.chapter_starts
@@ -300,75 +173,72 @@ class App:
             return
         i = bisect.bisect_right(chapters, self.idx) - 1
         if direction < 0:
-            # if we're only a few words into this chapter, go to the one before it
             if i >= 0 and self.idx - chapters[i] < 5:
                 i -= 1
             self.idx = chapters[i] if i >= 0 else 0
         else:
             j = bisect.bisect_right(chapters, self.idx)
-            self.idx = (chapters[j] if j < len(chapters)
-                        else len(self.book.words) - 1)
+            self.idx = chapters[j] if j < len(chapters) else len(self.book.words) - 1
+        self.redraw()
 
-    def show_paused(self):
-        self._set_mode(PAUSED)
-        self.display.show(main=render.paused(
-            self.book.title, self.book.words, self.idx,
-            self.sentence_start(self.idx), self.state.wpm, self.progress()))
-        self._progress_side()
-        self._side("right", ("hints", "paused"), lambda: render.hints("paused"))
-        self.save_position()
-
-    def start_reading(self):
-        self._set_mode(READING)
-        self._side("right", ("speed", self.state.wpm),
-                   lambda: render.speed_card(self.state.wpm))
-
-    def leave_to_menu(self):
-        self.state.in_book = False
-        self.save_position()
-        self.book = None
-        self.rescan()
-        self.show_menu()
-
-    def show_end(self):
-        self._set_mode(END)
-        self.display.show(main=render.the_end(self.book.title))
-        self._progress_side()
-        self._side("right", ("hints", "end"), lambda: render.hints("end"))
-
-    def power_off(self):
-        self.display.show(main=render.message(["Powering off\u2026"],
-                                              hint="safe to unplug when dark"),
-                          left=render.blank_side(), right=render.blank_side())
-        self._side_keys.clear()
+    def change_wpm(self, delta):
+        self.state.settings["wpm"] = max(
+            config.MIN_WPM, min(config.MAX_WPM, self.state.settings["wpm"] + delta))
         self.state.save()
-        argv = ["poweroff"] if os.geteuid() == 0 else ["sudo", "-n", "poweroff"]
-        rc = subprocess.call(argv)
-        if rc != 0:
-            self.show_menu(note="power-off failed")
+        self._flash_text = "%d wpm" % self.state.settings["wpm"]
+        self._flash_until = time.monotonic() + 1.0
 
-    # ---- playback ---------------------------------------------------
+    def save_position(self):
+        if self.book:
+            self.state.touch_book(self.book.path, position=self.idx)
+        self.state.save()
+        self.words_since_save = 0
+
+    def open_book(self, path):
+        self.book = books.Book.load(path)
+        rec = self.state.book(path)
+        self.idx = min(rec["position"], max(0, len(self.book.words) - 1))
+        self.state.touch_book(path, total_words=len(self.book.words))
+        self.state.last_book = path
+        self.state.in_book = True
+        self.state.save()
+        self.push(screens.PausedScreen())
+
+    def leave_to_library(self):
+        self.save_position()
+        if self.book and self._reading_since is not None:
+            self._accumulate_reading_time()
+        self.state.in_book = False
+        self.state.save()
+        self.book = None
+        self.pop_to_root()
+
+    def _accumulate_reading_time(self):
+        elapsed = time.monotonic() - self._reading_since
+        self._reading_since = None
+        self.state.touch_book(
+            self.book.path,
+            time_read_secs=self.state.book(self.book.path)["time_read_secs"] + elapsed)
 
     def step_word(self):
         words, para_ends = self.book.words, self.book.para_ends
         start = self.idx
         chunk = [words[start]]
-        total_delay = rsvp.word_delay(words[start], self.state.wpm,
-                                      start in para_ends)
+        wpm = self.state.settings["wpm"]
+        total_delay = rsvp.word_delay(words[start], wpm, start in para_ends)
         end = start
-        # pull in more words if a frame takes longer than one word's slot,
-        # so the average pace still matches the requested wpm
         while total_delay < self.refresh_secs and end + 1 < len(words):
             end += 1
             chunk.append(words[end])
-            total_delay += rsvp.word_delay(words[end], self.state.wpm,
-                                           end in para_ends)
+            total_delay += rsvp.word_delay(words[end], wpm, end in para_ends)
 
         t0 = time.monotonic()
-        img = (render.word_frame(chunk[0]) if len(chunk) == 1
-               else render.chunk_frame(chunk))
-        self.display.show(main=img)
-        self._progress_side()
+        flash = self._flash_text if time.monotonic() < self._flash_until else None
+        word_size = self.state.settings["word_size"]
+        img = (render.word_frame(chunk[0], self.theme, flash=flash, word_size=word_size)
+               if len(chunk) == 1
+               else render.chunk_frame(chunk, self.theme, word_size=word_size))
+        self.display.show(img)
         elapsed = time.monotonic() - t0
         self.refresh_secs = 0.8 * self.refresh_secs + 0.2 * elapsed
 
@@ -380,111 +250,64 @@ class App:
             self.idx = len(words) - 1
             self.state.in_book = False
             self.save_position()
-            self.show_end()
+            if self._reading_since is not None:
+                self._accumulate_reading_time()
+            self.push(screens.EndScreen())
             return
         remaining = total_delay - elapsed
         if remaining > 0:
             time.sleep(remaining)
 
-    # ---- event handling ----------------------------------------------
-
-    def handle(self, ev):
-        kind, n = ev
-        if self.mode == MENU:
-            if kind == "B" and n == 1 and self.library:
-                self.sel = (self.sel + 1) % len(self.library)
-                self.show_menu()
-            elif kind == "B" and n >= 2 and self.library:
-                self.sel = (self.sel - 1) % len(self.library)
-                self.show_menu()
-            elif kind == "A" and n == 1:
-                self.open_book()
-            elif kind == "A" and n >= 2:
-                self.rescan()
-                self.show_menu(note="rescanned")
-            elif kind == "holdB":
-                self._set_mode(CONFIRM_OFF)
-                self.display.show(main=render.confirm_power())
-                self._side("left", ("blank",), render.blank_side)
-                self._side("right", ("hints", "confirm"),
-                           lambda: render.hints("confirm"))
-
-        elif self.mode == CONFIRM_OFF:
-            if kind == "A":
-                self.power_off()
-            else:
-                self.show_menu()
-
-        elif self.mode == READING:
-            if kind == "A" and n == 1:
-                self.show_paused()
-            elif kind == "A" and n == 2:
-                self.change_wpm(config.WPM_STEP)
-            elif kind == "A" and n >= 3:
-                self.jump_sentence(+1)
-            elif kind == "B" and n == 1:
-                self.jump_sentence(-1)
-            elif kind == "B" and n == 2:
-                self.change_wpm(-config.WPM_STEP)
-            elif kind == "holdB":
-                self.leave_to_menu()
-
-        elif self.mode == PAUSED:
-            if kind == "A" and n == 1:
-                self.start_reading()
-            elif kind == "A" and n == 2:
-                self.jump_chapter(+1)
-                self.show_paused()
-            elif kind == "A" and n >= 3:
-                self.jump_sentence(+1)
-                self.show_paused()
-            elif kind == "B" and n == 1:
-                self.jump_sentence(-1)
-                self.show_paused()
-            elif kind == "B" and n == 2:
-                self.jump_chapter(-1)
-                self.show_paused()
-            elif kind == "holdB":
-                self.leave_to_menu()
-
-        elif self.mode == END:
-            self.leave_to_menu()
-
-    # ---- main loop ----------------------------------------------------
+    # ---- main loop ----
+    def _initial_screen(self):
+        library = books.scan_library()
+        if (self.state.in_book and self.state.last_book
+                and any(p == self.state.last_book for _, p in library)):
+            self.book = books.Book.load(self.state.last_book)
+            rec = self.state.book(self.state.last_book)
+            self.idx = min(rec["position"], max(0, len(self.book.words) - 1))
+            return screens.PausedScreen()
+        return screens.LibraryScreen()
 
     def run(self):
-        self.rescan()
-        # resume exactly where the reader was powered off, paused
-        if (self.state.in_book and self.state.last_book
-                and any(p == self.state.last_book for _, p in self.library)):
-            self.open_book()
-        else:
-            self.show_menu()
+        self.push(self._initial_screen())
         while True:
-            if self.mode == READING:
+            reading = isinstance(self.stack[-1], screens.ReadingScreen)
+            if reading:
                 try:
                     ev = self.events.get_nowait()
                 except queue.Empty:
                     self.step_word()
                     continue
-                self.handle(ev)
             else:
-                ev = self.events.get()
-                self.handle(ev)
+                try:
+                    ev = self.events.get(timeout=1.0)
+                except queue.Empty:
+                    self._tick_idle()
+                    continue
+            self._last_input_at = time.monotonic()
+            was_off = self._idle_state == "off"
+            self._tick_idle()
+            if was_off:
+                continue   # swallow the waking key press, per the control map
+            self.stack[-1].handle(self, ev)
+
+
+def _bail(app):
+    """Save and blank the panel. Used by the SIGTERM handler and tests."""
+    app.save_position() if app.book else app.state.save()
+    try:
+        app.display.sleep()
+    except Exception:
+        pass
 
 
 def main(display=None):
     os.makedirs(config.STATE_DIR, exist_ok=True)
-    if display is None:
-        display = open_display()
     app = App(display=display)
 
     def bail(signum, frame):
-        app.save_position() if app.book else app.state.save()
-        try:
-            display.sleep()      # screens go dark as the system shuts down
-        except Exception:
-            pass
+        _bail(app)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, bail)
@@ -493,8 +316,8 @@ def main(display=None):
     except Exception:
         traceback.print_exc()
         try:
-            display.show(main=render.message(
-                ["Error \u2014 restarting", "journalctl -u rapid-reader"]))
+            app.display.show(render.message_frame(
+                ["Error \u2014 restarting"], hint="journalctl -u rapid-reader"))
         except Exception:
             pass
         raise

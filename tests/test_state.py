@@ -64,6 +64,17 @@ def test_book_touch_and_bookmarks(tmp_path):
     assert s.book("/b.txt")["bookmarks"] == [30]
 
 
+def test_clean_book_record_bookmarks_not_shared(tmp_path):
+    path = str(tmp_path / "state.json")
+    with open(path, "w") as f:
+        json.dump({"version": 2, "books": {"/a.txt": {}, "/b.txt": {}}}, f)
+    s = state.State(path=path)
+    assert s.books["/a.txt"]["bookmarks"] is not s.books["/b.txt"]["bookmarks"]
+    s.books["/a.txt"]["bookmarks"].append(1)
+    assert s.books["/b.txt"]["bookmarks"] == []
+    assert state._BOOK_DEFAULTS["bookmarks"] == []
+
+
 def test_migrate_v1_dict():
     v1 = {
         "wpm": 400,

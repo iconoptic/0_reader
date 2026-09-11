@@ -39,6 +39,7 @@ def _clean_settings(raw):
 
 def _clean_book_record(raw):
     out = dict(_BOOK_DEFAULTS)
+    out["bookmarks"] = []
     if not isinstance(raw, dict):
         return out
     pos = raw.get("position")

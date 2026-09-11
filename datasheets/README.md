@@ -1,8 +1,54 @@
 # Datasheets
 
-Reference documents for the hardware used in the current (LCD) design.
-All files were downloaded from the vendors' own servers; the source URL for
-each is listed so it can be re-fetched or checked for newer revisions.
+Reference documents for the hardware used by Rapid Reader. The current
+design is the SH1106 OLED HAT below; the Waveshare Zero LCD HAT (A)
+section is kept for historical reference. All files were downloaded from
+the vendors' own servers where a URL exists; the source URL for each is
+listed so it can be re-fetched or checked for newer revisions.
+
+## 1.3inch SH1106 OLED HAT (joystick + 3 buttons) — `datasheets/`
+
+The current Rapid Reader hardware. Sold under several near-identical
+clone brand names (this unit: "xicoolee"); electrically and pin-for-pin
+compatible with Waveshare's own 1.3" OLED HAT designs built around the
+same SH1106 controller. No vendor-specific schematic/mechanical PDF was
+available for this exact clone at build time; the pinout below was
+confirmed against the SH1106 controller datasheet and the physical unit,
+and matches `rapid_reader/config.py`.
+
+| File | Source |
+|---|---|
+| `SH1106.pdf` | SH1106 OLED controller datasheet |
+
+### Pinout (BCM GPIO, all active-low with pull-ups for the buttons)
+
+| Function | Pin |
+|---|---|
+| OLED SPI bus | SPI0 CE0 (`/dev/spidev0.0`) |
+| OLED MOSI | BCM 10 |
+| OLED SCLK | BCM 11 |
+| OLED CS | BCM 8 (SPI0 CE0, kernel-managed) |
+| OLED DC | BCM 24 |
+| OLED RST | BCM 25 |
+| K1 | BCM 21 |
+| K2 | BCM 20 |
+| K3 | BCM 16 |
+| Joystick UP | BCM 6 |
+| Joystick DOWN | BCM 19 |
+| Joystick LEFT | BCM 5 |
+| Joystick RIGHT | BCM 26 |
+| Joystick PRESS | BCM 13 |
+
+### Controller notes
+
+* SH1106: page-addressed, 132×64 controller RAM, 128×64 visible — column
+  address offset of 2 (see `config.OLED_COL_OFFSET`). No backlight;
+  brightness is the contrast register (command `0x81`). SPI mode 0, MSB
+  first, max ~4 MHz per the datasheet.
+* The previous section's board (Waveshare Zero LCD HAT (A)) is kept below
+  for historical reference — that hardware is no longer used by this
+  project as of the SH1106 overhaul, but its datasheets remain useful if
+  the project is ever ported back or forked for that HAT.
 
 ## Raspberry Pi Zero W v1.1 — `raspberry-pi-zero-w/`
 
@@ -20,7 +66,10 @@ boot options) is web-based, not a downloadable PDF:
 <https://www.raspberrypi.com/documentation/computers/raspberry-pi.html>
 <https://www.raspberrypi.com/documentation/computers/getting-started.html>
 
-## Waveshare Zero LCD HAT (A) — `waveshare-zero-lcd-hat-a/`
+## Waveshare Zero LCD HAT (A) — `waveshare-zero-lcd-hat-a/` (historical / superseded)
+
+Previous Rapid Reader hardware (three SPI LCDs + two keys). Kept for
+reference only; the app no longer targets this HAT.
 
 Wiki (pinout, demo download, FAQ): <https://www.waveshare.com/wiki/Zero_LCD_HAT_(A)>
 

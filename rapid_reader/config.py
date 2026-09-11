@@ -38,6 +38,7 @@ HOLD_DELAY = 0.5     # how long a key must be held before "hold" (or the
 REPEAT_SECS = 0.12   # interval between "repeat" events while still held
 
 # --- Paths (unchanged from the LCD build) ---------------------------
+VERSION = "1.0.0-sh1106"
 BOOKS_DIR = "/home/reader/ebooks"
 STATE_DIR = "/var/lib/rapid-reader"
 STATE_FILE = STATE_DIR + "/state.json"
@@ -77,22 +78,3 @@ SETTINGS_DEFAULTS = {
     "pivot_style": "ticks",    # ticks | underline | box | bold
     "word_size": "medium",     # small | medium | large
 }
-
-# --- Temporary: LCD HAT (remove in Phases 1A / 1B / 2) ----------------
-# Kept so current lcd/display/render/buttons/main and their tests keep
-# importing until those modules are rewritten. Not part of the SH1106
-# contract in docs/plan/phase-0-contracts.md.
-MAIN = dict(spi=(1, 0), dc=22, rst=27, bl=19, speed_hz=31_250_000)
-LEFT = dict(spi=(0, 0), dc=4, rst=24, bl=13, speed_hz=15_625_000)
-RIGHT = dict(spi=(0, 1), dc=5, rst=23, bl=12, speed_hz=15_625_000)
-MAIN_W, MAIN_H = 240, 240
-SIDE_W, SIDE_H = 80, 160
-MAIN_ROTATE_180 = False
-SIDE_ROTATE_180 = False
-SWAP_SIDES = False
-BACKLIGHT_PWM_HZ = 1000
-BL_MAIN = 0.85
-BL_SIDE = 0.55
-BL_SIDE_READING = 0.22
-TAP_WINDOW = 0.45
-HOLD_TIME = 1.5

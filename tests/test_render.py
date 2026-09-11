@@ -163,6 +163,8 @@ def test_chunk_frame_keeps_orp_when_it_fits_else_plain():
     plain = render.chunk_frame(["antidisestablishmentarianism"] * 6, th)
     assert fitted.size == plain.size == (W, H)
     assert list(fitted.get_flattened_data()) != list(plain.get_flattened_data())
+    large = render.chunk_frame(["a", "b"], th, word_size="large")
+    assert list(large.get_flattened_data()) != list(fitted.get_flattened_data())
 
 
 # ---- list_frame ------------------------------------------------------
