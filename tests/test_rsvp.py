@@ -56,3 +56,32 @@ def test_word_delay_paragraph_end():
 def test_word_delay_internal_punctuation_does_not_linger():
     # punctuation inside the core (e.g. hyphen or apostrophe) is not a pause
     assert rsvp.word_delay("don't", 150) == pytest.approx(rsvp.word_delay("dont", 150))
+
+
+def test_word_delay_without_weights_matches_hardcoded_constants():
+    """Regression: omitting weights must match the pre-weights formula."""
+    wpm = 150
+    base = 60.0 / wpm
+    cases = [
+        ("word", False, base),
+        ("extraordinary", False, base + base * 0.4),
+        ("word.", False, base + base * 1.5),
+        ("word,", False, base + base * 0.7),
+        ("word", True, base + base * 1.0),
+        ("extraordinary.", True, base + base * 0.4 + base * 1.5 + base * 1.0),
+    ]
+    for word, is_para_end, expected in cases:
+        assert rsvp.word_delay(word, wpm, is_para_end) == pytest.approx(expected)
+
+
+def test_word_delay_weights_override_one_component():
+    wpm = 150
+    base = 60.0 / wpm
+    # sentence weight zeroed: period no longer adds linger
+    assert rsvp.word_delay("word.", wpm, weights={"sentence": 0.0}) == pytest.approx(base)
+    # clause still uses default
+    assert rsvp.word_delay("word,", wpm, weights={"sentence": 0.0}) == pytest.approx(
+        base + base * 0.7)
+    # long overridden only
+    assert rsvp.word_delay("extraordinary", wpm, weights={"long": 0.0}) == pytest.approx(base)
+    assert rsvp.word_delay("word", wpm, True, weights={"para": 0.0}) == pytest.approx(base)

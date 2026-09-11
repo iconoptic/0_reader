@@ -12,29 +12,30 @@ import config
 
 def test_tokenize_words_sentences_paragraphs():
     text = "Hello there. How are you?\n\nFine, thanks!"
-    words, starts, para_ends, chapters = books._tokenize(text)
+    words, starts, para_ends, chapters, titles = books._tokenize(text)
     assert words == ["Hello", "there.", "How", "are", "you?", "Fine,", "thanks!"]
     # sentence starts: beginning, after "there.", paragraph start (after "you?")
     assert starts == [0, 2, 5]
     assert para_ends == {4, 6}
     assert chapters == []
+    assert titles == []
 
 
 def test_tokenize_sentence_end_with_closing_quote():
-    words, starts, _, _ = books._tokenize('"Go away!" she said. Then silence.')
+    words, starts, _, _, _ = books._tokenize('"Go away!" she said. Then silence.')
     assert words[1] == 'away!"'
     assert 2 in starts and 4 in starts
 
 
 def test_tokenize_ignores_blank_paragraphs_and_no_trailing_start():
-    words, starts, para_ends, _ = books._tokenize("\n\n  \n\nOne two.\n\n\n\n")
+    words, starts, para_ends, _, _ = books._tokenize("\n\n  \n\nOne two.\n\n\n\n")
     assert words == ["One", "two."]
     assert starts == [0]           # the start after "two." would be == len(words)
     assert para_ends == {1}
 
 
 def test_tokenize_empty():
-    assert books._tokenize("") == ([], [], set(), [])
+    assert books._tokenize("") == ([], [], set(), [], [])
 
 
 # ---- chapter detection -------------------------------------------------
@@ -76,10 +77,11 @@ def test_heading_heuristic_pronoun_I_alone_is_a_heading_edge_case():
 def test_tokenize_plain_text_chapters():
     text = ("Title of Book\n\nCHAPTER I.\n\nIt begins. Really.\n\n"
             "CHAPTER II.\n\nIt continues.\n\nThe end.")
-    words, starts, para_ends, chapters = books._tokenize(text)
+    words, starts, para_ends, chapters, titles = books._tokenize(text)
     assert words[chapters[0]] == "CHAPTER"
     assert words[chapters[1]] == "CHAPTER"
     assert chapters == [3, 8]
+    assert titles == ["CHAPTER I.", "CHAPTER II."]
 
 
 def test_tokenize_epub_marks_take_precedence_over_heuristic():
@@ -87,17 +89,20 @@ def test_tokenize_epub_marks_take_precedence_over_heuristic():
     # a TOC list item that *looks* like a heading must not be flagged when
     # the document has real heading markup
     text = "Chapter 1. Loomings.\n\n" + m + " Chapter 1\n\nCall me Ishmael."
-    words, _, _, chapters = books._tokenize(text)
+    words, _, _, chapters, titles = books._tokenize(text)
     assert m not in words
     assert chapters == [3]
     assert words[3:5] == ["Chapter", "1"]
+    assert titles == ["Chapter 1"]
+    assert m not in titles[0]
 
 
 def test_tokenize_empty_heading_mark_is_dropped():
     m = books._CHAPTER_MARK
-    words, _, _, chapters = books._tokenize(m + "\n\nText here.")
+    words, _, _, chapters, titles = books._tokenize(m + "\n\nText here.")
     assert words == ["Text", "here."]
     assert chapters == []
+    assert titles == []
 
 
 # ---- html / epub -------------------------------------------------------
@@ -111,9 +116,11 @@ def test_html_to_text_blocks_headings_and_skips_style():
     assert "p{}" not in text and "x()" not in text
     assert books._CHAPTER_MARK in text
     assert "Second & last." in text
-    words, _, _, chapters = books._tokenize(text)
+    words, _, _, chapters, titles = books._tokenize(text)
     assert words == ["Chapter", "1", "First", "para.", "Second", "&", "last."]
     assert chapters == [0]
+    assert titles == ["Chapter 1"]
+    assert books._CHAPTER_MARK not in titles[0]
 
 
 def _make_epub(path, title="Test Book", chapters=2, opf_dir="OEBPS"):
@@ -206,7 +213,48 @@ def test_bundled_ebooks_load_and_have_chapters():
         assert b.words, title
         assert b.sentence_starts[0] == 0
         assert all(0 <= c < len(b.words) for c in b.chapter_starts)
+        assert len(b.chapter_titles) == len(b.chapter_starts)
         if title.startswith("Welcome"):
             assert b.chapter_starts == []
         else:
             assert len(b.chapter_starts) >= 5, title
+
+
+def test_chapter_titles_and_chapter_title_lookup():
+    text = ("Preamble words here.\n\nChapter 1\n\nBody of one. More.\n\n"
+            "Chapter 2\n\nBody of two.")
+    words, _, _, chapters, titles = books._tokenize(text)
+    assert len(titles) == len(chapters) == 2
+    assert titles == ["Chapter 1", "Chapter 2"]
+    b = books.Book("x.txt", "x", words, [0], set(), chapters, titles)
+    assert b.chapter_title(0) is None  # before first chapter
+    assert b.chapter_title(chapters[0]) == "Chapter 1"
+    assert b.chapter_title(chapters[0] + 1) == "Chapter 1"
+    assert b.chapter_title(chapters[1]) == "Chapter 2"
+    assert b.chapter_title(len(words) - 1) == "Chapter 2"
+    empty = books.Book("y.txt", "y", ["hi"], [0], set())
+    assert empty.chapter_title(0) is None
+
+
+def test_chapter_titles_from_epub_headings(tmp_path):
+    p = tmp_path / "b.epub"
+    _make_epub(p, chapters=2)
+    b = books.Book.load(str(p))
+    assert len(b.chapter_titles) == len(b.chapter_starts) == 2
+    assert b.chapter_titles == ["Chapter 1", "Chapter 2"]
+    assert books._CHAPTER_MARK not in b.chapter_titles[0]
+    assert b.chapter_title(b.chapter_starts[0]) == "Chapter 1"
+    assert b.chapter_title(b.chapter_starts[1]) == "Chapter 2"
+
+
+def test_sort_by_recency():
+    lib = [
+        ("Zebra", "/z.txt"),
+        ("Alpha", "/a.txt"),
+        ("Middle", "/m.txt"),
+        ("Beta", "/b.txt"),
+    ]
+    last = {"/m.txt": 100.0, "/z.txt": 200.0, "/a.txt": 0.0}
+    # 0.0 is falsy -> treated as never-opened; timestamped first by -t
+    ordered = books.sort_by_recency(lib, last)
+    assert [t for t, _ in ordered] == ["Zebra", "Middle", "Alpha", "Beta"]

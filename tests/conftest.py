@@ -3,7 +3,7 @@
 The app modules live in ``rapid_reader/`` and import each other as top-level
 modules (``import config``), exactly as they run on the device, so that
 directory is put on ``sys.path``. Hardware-only libraries (``spidev``,
-``lgpio``, ``gpiozero``) are never imported by the tests; ``lcd``,
+``lgpio``, ``gpiozero``) are never imported by the tests; ``oled``,
 ``display`` and ``buttons`` tolerate their absence.
 """
 
@@ -37,20 +37,24 @@ def books_dir():
 
 
 class FakeButton:
-    """Stand-in for gpiozero.Button: records callbacks, lets tests fire them."""
+    """Stand-in for gpiozero.Button: records callbacks, lets tests fire
+    them directly. Timing (hold/repeat) is exercised by monkeypatching
+    config.HOLD_DELAY / config.REPEAT_SECS down to a few milliseconds and
+    using the `wait_for` fixture to await the real threading.Timer -- see
+    test_buttons.py for the pattern."""
 
     def __init__(self):
         self.when_pressed = None
-        self.when_held = None
         self.when_released = None
 
     def tap(self):
         self.when_pressed()
         self.when_released()
 
-    def hold(self):
+    def press(self):
         self.when_pressed()
-        self.when_held()
+
+    def release(self):
         self.when_released()
 
 
@@ -60,13 +64,14 @@ def fake_button():
 
 
 class FakePanel:
-    """Stand-in for lcd.ST77xx: records every frame pushed to it."""
+    """Stand-in for oled.SH1106: records every frame pushed to it."""
 
     def __init__(self, width, height):
         self.width, self.height = width, height
         self.frames = []
         self.raw = []
-        self.backlight_level = None
+        self.contrast_level = None
+        self.inverted = False
         self.sleeping = False
 
     def show(self, image):
@@ -74,14 +79,20 @@ class FakePanel:
         self.frames.append(image)
 
     def show_raw(self, buf):
-        assert len(buf) == self.width * self.height * 2
+        assert len(buf) == self.width * self.height // 8
         self.raw.append(bytes(buf))
 
-    def backlight(self, level):
-        self.backlight_level = level
+    def contrast(self, value):
+        self.contrast_level = value
+
+    def invert(self, on):
+        self.inverted = bool(on)
 
     def sleep(self):
         self.sleeping = True
+
+    def wake(self):
+        self.sleeping = False
 
     @property
     def last(self):
@@ -91,9 +102,7 @@ class FakePanel:
 @pytest.fixture
 def fake_display():
     import display
-    return display.Display(FakePanel(config.MAIN_W, config.MAIN_H),
-                           FakePanel(config.SIDE_W, config.SIDE_H),
-                           FakePanel(config.SIDE_W, config.SIDE_H))
+    return display.Display(FakePanel(config.OLED_W, config.OLED_H))
 
 
 @pytest.fixture

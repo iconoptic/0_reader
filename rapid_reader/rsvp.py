@@ -34,18 +34,23 @@ def orp_index(word):
     return start + off
 
 
-def word_delay(word, wpm, is_para_end=False):
-    """Seconds to show a word: longer words and clause ends linger."""
+DEFAULT_WEIGHTS = {"long": 0.4, "clause": 0.7, "sentence": 1.5, "para": 1.0}
+
+
+def word_delay(word, wpm, is_para_end=False, weights=None):
+    """Seconds to show a word. `weights` (optional) overrides any subset
+    of DEFAULT_WEIGHTS's keys; unspecified keys keep their default."""
+    w = DEFAULT_WEIGHTS if weights is None else {**DEFAULT_WEIGHTS, **weights}
     base = 60.0 / wpm
     d = base
     start, end = core_span(word)
     if end - start >= 9:
-        d += base * 0.4
+        d += base * w["long"]
     tail = word[end:] if end < len(word) else ""
     if any(c in tail for c in ".!?"):
-        d += base * 1.5
+        d += base * w["sentence"]
     elif any(c in tail for c in ",;:\u2014"):
-        d += base * 0.7
+        d += base * w["clause"]
     if is_para_end:
-        d += base * 1.0
+        d += base * w["para"]
     return d

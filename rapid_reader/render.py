@@ -1,51 +1,42 @@
-"""All screen rendering for the three LCDs, dark theme throughout.
+"""All screen rendering for the 128x64 SH1106 panel.
 
-Main-screen functions return a 240x240 RGB image; side-card functions
-return an 80x160 (portrait) RGB image. Nothing here touches hardware.
+Frame functions return mode-'L' images (values 0/255 only). Theme invert is
+applied later by the driver / App — never here. No colour, no side cards.
 """
 
-import os
-
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 import config
 import rsvp
+import theme as themes
 
-MW, MH = config.MAIN_W, config.MAIN_H
-SW, SH = config.SIDE_W, config.SIDE_H
+W, H = config.OLED_W, config.OLED_H   # 128, 64
+CENTER_Y = H // 2                     # 32
+PIVOT_X = 50
+INK, BG = 255, 0
 
-# Palette (dark theme)
-BG = (0, 0, 0)
-FG = (228, 228, 228)
-DIM = (125, 125, 125)
-FAINT = (52, 52, 52)
-ACCENT = (255, 150, 30)
-ACCENT_BG = (58, 34, 0)
+_WORD_SIZE_TIERS = {
+    "small":  (18, 15, 13, 11),
+    "medium": (22, 19, 16, 13),
+    "large":  (28, 24, 20, 16),
+}
 
+# Fixed tick geometry for pivot_style="ticks" (not per-theme).
+_TICK_ABOVE = (16, 10)   # CENTER_Y - these
+_TICK_BELOW = (10, 16)   # CENTER_Y + these
 
-def _font_dir():
-    for d in config.FONT_DIRS:
-        if os.path.exists(os.path.join(d, "DejaVuSans.ttf")):
-            return d
-    raise FileNotFoundError("DejaVuSans.ttf not found in %r" % (config.FONT_DIRS,))
-
-
-_REG = os.path.join(_font_dir(), "DejaVuSans.ttf")
-_BOLD = os.path.join(_font_dir(), "DejaVuSans-Bold.ttf")
-
-_fonts = {}
+_UI = themes.THEMES[themes.DEFAULT_THEME_KEY]
 
 
-def _font(path, size):
-    key = (path, size)
-    if key not in _fonts:
-        _fonts[key] = ImageFont.truetype(path, size)
-    return _fonts[key]
-
-
-def _canvas(w, h):
-    img = Image.new("RGB", (w, h), BG)
+def _canvas():
+    """Mode 'L', background 0. All frames draw ink=255 on bg=0."""
+    img = Image.new("L", (W, H), BG)
     return img, ImageDraw.Draw(img)
+
+
+def _finalize(img):
+    """Collapse FreeType antialias mid-tones to strict 0/255."""
+    return img.point(lambda p: INK if p >= 128 else BG, mode="L")
 
 
 def _ellipsize(draw, text, fnt, max_w):
@@ -78,10 +69,10 @@ def _wrap(draw, text, fnt, max_w, max_lines):
     return [_ellipsize(draw, l, fnt, max_w) for l in lines]
 
 
-def _center(draw, text, fnt, y, fill, w=None, x0=0):
-    w = MW if w is None else w
+def _center(draw, text, fnt, y, w=None, x0=0):
+    w = W if w is None else w
     tw = draw.textlength(text, font=fnt)
-    draw.text((x0 + (w - tw) / 2, y), text, font=fnt, fill=fill)
+    draw.text((x0 + (w - tw) / 2, y), text, font=fnt, fill=INK)
 
 
 def fmt_minutes(minutes):
@@ -102,415 +93,385 @@ def fmt_words(n):
     return str(n)
 
 
-# ====================================================================
-# Main screen (240x240)
-# ====================================================================
+def _default_theme():
+    return _UI
 
-# ---- RSVP word frame -----------------------------------------------
 
-PIVOT_X = 96              # fixed column the pivot letter is centred on
-CENTER_Y = MH // 2
-_WORD_SIZES = (40, 34, 28, 22, 17)
-_TICK = (44, 58)          # tick marks span CENTER_Y +/- these
+def _header_band(d, title, note=None, title_fnt=None, note_fnt=None):
+    """Shared header: bold title at (3,1), optional right note, rule at y=12."""
+    t = _default_theme()
+    title_fnt = title_fnt or themes.font(t, 11, bold=True)
+    note_fnt = note_fnt or themes.font(t, 9)
+    note_w = 0
+    if note:
+        note = _ellipsize(d, note, note_fnt, W // 2)
+        note_w = d.textlength(note, font=note_fnt) + 4
+        d.text((W - 3 - d.textlength(note, font=note_fnt), 2), note,
+               font=note_fnt, fill=INK)
+    d.text((3, 1), _ellipsize(d, title, title_fnt, W - 6 - note_w),
+           font=title_fnt, fill=INK)
+    d.line([(0, 12), (W - 1, 12)], fill=INK)
 
 
 def _draw_ticks(d, cx):
-    d.line([(cx, CENTER_Y - _TICK[1]), (cx, CENTER_Y - _TICK[0])], fill=DIM)
-    d.line([(cx, CENTER_Y + _TICK[0]), (cx, CENTER_Y + _TICK[1])], fill=DIM)
+    d.line([(cx, CENTER_Y - _TICK_ABOVE[0]), (cx, CENTER_Y - _TICK_ABOVE[1])],
+           fill=INK)
+    d.line([(cx, CENTER_Y + _TICK_BELOW[0]), (cx, CENTER_Y + _TICK_BELOW[1])],
+           fill=INK)
 
 
-def word_frame(word):
-    """One word, pivot letter in accent colour sitting on PIVOT_X."""
-    img, d = _canvas(MW, MH)
+def _draw_pivot_char(d, th, ch, x, y, reg, bold):
+    """Draw the ORP character with theme.pivot_style. Returns width of ch."""
+    style = th.pivot_style
+    if style == "box":
+        fnt = reg
+        bbox = d.textbbox((x, y), ch, font=fnt, anchor="lm")
+        pad = 1
+        d.rectangle([bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad],
+                    fill=INK)
+        d.text((x, y), ch, font=fnt, fill=BG, anchor="lm")
+        return d.textlength(ch, font=fnt)
+    fnt = bold
+    w_ch = d.textlength(ch, font=fnt)
+    d.text((x, y), ch, font=fnt, fill=INK, anchor="lm")
+    if style == "ticks":
+        _draw_ticks(d, x + w_ch / 2)
+    elif style == "underline":
+        bbox = d.textbbox((x, y), ch, font=fnt, anchor="lm")
+        uy = bbox[3] + 2
+        d.line([(x, uy), (x + w_ch, uy)], fill=INK)
+    # "bold" and unknown: weight alone
+    return w_ch
+
+
+def _draw_orp_parts(d, th, pre, ch, post, x, y, reg, bold):
+    """Draw pre/ch/post at (x,y) with pivot styling. Returns end x."""
+    if pre:
+        d.text((x, y), pre, font=reg, fill=INK, anchor="lm")
+        x += d.textlength(pre, font=reg)
+    x += _draw_pivot_char(d, th, ch, x, y, reg, bold)
+    if post:
+        d.text((x, y), post, font=reg, fill=INK, anchor="lm")
+        x += d.textlength(post, font=reg)
+    return x
+
+
+def _flash_badge(d, text):
+    """Top-right inverted badge for transient status (e.g. wpm change)."""
+    t = _default_theme()
+    fnt = themes.font(t, 9, bold=True)
+    text = _ellipsize(d, text, fnt, 30)
+    x0, y0, x1, y1 = W - 34, 2, W - 2, 12
+    d.rectangle([x0, y0, x1, y1], fill=INK)
+    tw = d.textlength(text, font=fnt)
+    d.text((x0 + (x1 - x0 - tw) / 2, y0 + 1), text, font=fnt, fill=BG)
+
+
+# ---- RSVP word frame -------------------------------------------------
+
+def word_frame(word, theme, flash=None, word_size=None):
+    """One word, ORP marked per theme.pivot_style, sitting on PIVOT_X."""
+    img, d = _canvas()
+    word_size = word_size or config.SETTINGS_DEFAULTS["word_size"]
+    sizes = _WORD_SIZE_TIERS.get(word_size, _WORD_SIZE_TIERS["medium"])
     orp = rsvp.orp_index(word)
     pre, ch, post = word[:orp], word[orp], word[orp + 1:]
 
     reg = bold = None
     x0 = 4
-    for size in _WORD_SIZES:
-        reg, bold = _font(_REG, size), _font(_BOLD, size)
+    for size in sizes:
+        reg = themes.font(theme, size)
+        bold = themes.font(theme, size, bold=True)
+        # Measure pivot glyph with the font the style will actually use.
+        ch_fnt = reg if theme.pivot_style == "box" else bold
         w_pre = d.textlength(pre, font=reg)
-        w_ch = d.textlength(ch, font=bold)
+        w_ch = d.textlength(ch, font=ch_fnt)
         w_post = d.textlength(post, font=reg)
         x0 = PIVOT_X - w_pre - w_ch / 2
-        if x0 >= 4 and x0 + w_pre + w_ch + w_post <= MW - 4:
+        if x0 >= 4 and x0 + w_pre + w_ch + w_post <= W - 4:
             break
-    total = (d.textlength(pre, font=reg) + d.textlength(ch, font=bold)
+    ch_fnt = reg if theme.pivot_style == "box" else bold
+    total = (d.textlength(pre, font=reg) + d.textlength(ch, font=ch_fnt)
              + d.textlength(post, font=reg))
-    if total > MW - 8:
-        return _two_line_word(img, d, word, orp)
-    x0 = max(4, min(x0, MW - 4 - total))
-
-    x = x0
-    d.text((x, CENTER_Y), pre, font=reg, fill=FG, anchor="lm")
-    x += d.textlength(pre, font=reg)
-    cx = x + d.textlength(ch, font=bold) / 2
-    d.text((x, CENTER_Y), ch, font=bold, fill=ACCENT, anchor="lm")
-    x += d.textlength(ch, font=bold)
-    d.text((x, CENTER_Y), post, font=reg, fill=FG, anchor="lm")
-    _draw_ticks(d, cx)
-    return img
+    if total > W - 8:
+        img = _two_line_word(img, d, word, orp, theme)
+        if flash:
+            _flash_badge(ImageDraw.Draw(img), flash)
+        return _finalize(img)
+    x0 = max(4, min(x0, W - 4 - total))
+    _draw_orp_parts(d, theme, pre, ch, post, x0, CENTER_Y, reg, bold)
+    if flash:
+        _flash_badge(d, flash)
+    return _finalize(img)
 
 
-def _two_line_word(img, d, word, orp):
-    """A word too long even at the smallest size: hyphenate onto two lines
-    (left-aligned) so no glyph is ever cut off at the edge."""
-    reg, bold = _font(_REG, 26), _font(_BOLD, 26)
+def _two_line_word(img, d, word, orp, theme):
+    """Hyphenate onto two lines so no glyph is cut off at the edge."""
+    reg = themes.font(theme, 13)
+    bold = themes.font(theme, 13, bold=True)
     k = len(word) - 1
-    while k > 1 and d.textlength(word[:k] + "-", font=reg) > MW - 8:
+    while k > 1 and d.textlength(word[:k] + "-", font=reg) > W - 8:
         k -= 1
     first, second = word[:k] + "-", word[k:]
-    second = _ellipsize(d, second, reg, MW - 8)
-    y1, y2 = CENTER_Y - 17, CENTER_Y + 17
+    second = _ellipsize(d, second, reg, W - 8)
+    y1, y2 = CENTER_Y - 10, CENTER_Y + 10
     if orp < k:
         x = 4
-        d.text((x, y1), first[:orp], font=reg, fill=FG, anchor="lm")
-        x += d.textlength(first[:orp], font=reg)
-        d.text((x, y1), first[orp], font=bold, fill=ACCENT, anchor="lm")
-        x += d.textlength(first[orp], font=bold)
-        d.text((x, y1), first[orp + 1:], font=reg, fill=FG, anchor="lm")
-        d.text((4, y2), second, font=reg, fill=FG, anchor="lm")
+        pre, ch, post = first[:orp], first[orp], first[orp + 1:]
+        _draw_orp_parts(d, theme, pre, ch, post, x, y1, reg, bold)
+        d.text((4, y2), second, font=reg, fill=INK, anchor="lm")
     else:
-        d.text((4, y1), first, font=reg, fill=FG, anchor="lm")
-        d.text((4, y2), second, font=reg, fill=FG, anchor="lm")
+        d.text((4, y1), first, font=reg, fill=INK, anchor="lm")
+        d.text((4, y2), second, font=reg, fill=INK, anchor="lm")
     return img
 
 
-def _fit_chunk_orp(d, words):
-    """Try each word size (largest first) and return (size, parts) for the
-    first one where every word's pre/pivot/post pieces fit on one line
-    without truncating anything, or None if even the smallest doesn't fit.
-    parts is a list of (pre, ch, post) per word, in order."""
-    for size in _WORD_SIZES:
-        reg, bold = _font(_REG, size), _font(_BOLD, size)
+def _fit_chunk_orp(d, words, theme):
+    """Largest size where every word's ORP pieces fit on one line, or None."""
+    sizes = _WORD_SIZE_TIERS["medium"]
+    for size in sizes:
+        reg = themes.font(theme, size)
+        bold = themes.font(theme, size, bold=True)
+        ch_fnt = reg if theme.pivot_style == "box" else bold
         space_w = d.textlength(" ", font=reg)
         parts = []
         total = 0.0
         for w in words:
             orp = rsvp.orp_index(w)
             pre, ch, post = w[:orp], w[orp], w[orp + 1:]
-            total += (d.textlength(pre, font=reg) + d.textlength(ch, font=bold)
+            total += (d.textlength(pre, font=reg) + d.textlength(ch, font=ch_fnt)
                       + d.textlength(post, font=reg))
             parts.append((pre, ch, post))
         total += space_w * (len(words) - 1)
-        if total <= MW - 8:
+        if total <= W - 8:
             return size, parts
     return None
 
 
-def chunk_frame(words):
-    """Frame for 2+ words shown at once (wpm outpacing the frame rate).
-
-    Keeps each word's own pivot letter highlighted as long as the whole
-    chunk fits on one line; otherwise falls back to plain, ellipsized text.
-    """
-    img, d = _canvas(MW, MH)
-    fitted = _fit_chunk_orp(d, words)
+def chunk_frame(words, theme):
+    """2+ words at once when wpm outpaces the frame rate."""
+    img, d = _canvas()
+    fitted = _fit_chunk_orp(d, words, theme)
     if fitted is None:
         text = " ".join(words)
-        fnt = _font(_REG, _WORD_SIZES[-1])
-        for size in _WORD_SIZES:
-            fnt = _font(_REG, size)
-            if d.textlength(text, font=fnt) <= MW - 8:
+        sizes = _WORD_SIZE_TIERS["medium"]
+        fnt = themes.font(theme, sizes[-1])
+        for size in sizes:
+            fnt = themes.font(theme, size)
+            if d.textlength(text, font=fnt) <= W - 8:
                 break
-        text = _ellipsize(d, text, fnt, MW - 8)
-        x = (MW - d.textlength(text, font=fnt)) / 2
-        d.text((x, CENTER_Y), text, font=fnt, fill=FG, anchor="lm")
+        text = _ellipsize(d, text, fnt, W - 8)
+        x = (W - d.textlength(text, font=fnt)) / 2
+        d.text((x, CENTER_Y), text, font=fnt, fill=INK, anchor="lm")
     else:
         size, parts = fitted
-        reg, bold = _font(_REG, size), _font(_BOLD, size)
+        reg = themes.font(theme, size)
+        bold = themes.font(theme, size, bold=True)
         space_w = d.textlength(" ", font=reg)
-        total_w = sum(d.textlength(pre, font=reg) + d.textlength(ch, font=bold)
+        ch_fnt = reg if theme.pivot_style == "box" else bold
+        total_w = sum(d.textlength(pre, font=reg) + d.textlength(ch, font=ch_fnt)
                       + d.textlength(post, font=reg) for pre, ch, post in parts)
         total_w += space_w * (len(parts) - 1)
-        x = (MW - total_w) / 2
+        x = (W - total_w) / 2
         for pre, ch, post in parts:
-            d.text((x, CENTER_Y), pre, font=reg, fill=FG, anchor="lm")
-            x += d.textlength(pre, font=reg)
-            d.text((x, CENTER_Y), ch, font=bold, fill=ACCENT, anchor="lm")
-            x += d.textlength(ch, font=bold)
-            d.text((x, CENTER_Y), post, font=reg, fill=FG, anchor="lm")
-            x += d.textlength(post, font=reg) + space_w
-    return img
+            x = _draw_orp_parts(d, theme, pre, ch, post, x, CENTER_Y, reg, bold)
+            x += space_w
+    return _finalize(img)
 
 
-# ---- library ---------------------------------------------------------
+# ---- list / info / paused --------------------------------------------
 
-MENU_ROWS = 8
-_MENU_Y0 = 30
-_MENU_ROW_H = 24
+def list_frame(header, rows, sel, top, rows_visible=4, footer=None, note=None,
+               empty_lines=None):
+    """Generic scrollable list used by every list-shaped screen."""
+    img, d = _canvas()
+    _header_band(d, header, note)
+    t = _default_theme()
+    row_f = themes.font(t, 10)
+    row_h = 12
+    y0 = 14
 
+    if not rows:
+        lines = empty_lines or ("No items.",)
+        f = themes.font(t, 10)
+        y = 22
+        for line in lines[:3]:
+            d.text((3, y), _ellipsize(d, line, f, W - 6), font=f, fill=INK)
+            y += 12
+        return _finalize(img)
 
-def _header(d, title, note=None):
-    d.text((8, 5), title, font=_font(_BOLD, 14), fill=ACCENT)
-    if note:
-        nf = _font(_REG, 11)
-        d.text((MW - 8 - d.textlength(note, font=nf), 8), note, font=nf, fill=DIM)
-    d.line([(0, 25), (MW, 25)], fill=FAINT)
-
-
-def menu(titles, sel, top, note=None):
-    img, d = _canvas(MW, MH)
-    _header(d, "LIBRARY", note)
-    row_f = _font(_REG, 14)
-    if not titles:
-        f = _font(_REG, 13)
-        d.text((10, 48), "No books found.", font=f, fill=FG)
-        d.text((10, 72), "Copy .txt / .epub files to", font=f, fill=DIM)
-        d.text((10, 92), config.BOOKS_DIR, font=_font(_BOLD, 12), fill=FG)
-        d.text((10, 116), "e.g. from another machine:", font=f, fill=DIM)
-        d.text((10, 136), "scp book.epub \\", font=_font(_REG, 11), fill=FG)
-        d.text((10, 152), "  reader@rapidreader.local:ebooks/",
-               font=_font(_REG, 11), fill=FG)
-        return img
-
-    y = _MENU_Y0
-    for i in range(top, min(top + MENU_ROWS, len(titles))):
-        label = _ellipsize(d, titles[i], row_f, MW - 30)
+    for i in range(top, min(top + rows_visible, len(rows))):
+        y = y0 + (i - top) * row_h
+        label = _ellipsize(d, rows[i], row_f, W - 16)
         if i == sel:
-            d.rectangle([0, y, MW - 1, y + _MENU_ROW_H - 1], fill=ACCENT_BG)
-            d.rectangle([0, y, 3, y + _MENU_ROW_H - 1], fill=ACCENT)
-            d.text((12, y + 4), label, font=row_f, fill=FG)
+            d.rectangle([0, y, W - 1, y + row_h - 1], fill=INK)
+            d.text((3, y + 1), label, font=row_f, fill=BG)
         else:
-            d.text((12, y + 4), label, font=row_f, fill=DIM)
-        y += _MENU_ROW_H
-    # scroll indicators
+            d.text((3, y + 1), label, font=row_f, fill=INK)
+
+    # scroll indicators (filled triangles at top-right / bottom-right)
     if top > 0:
-        d.polygon([(MW - 10, _MENU_Y0 + 3), (MW - 6, _MENU_Y0 + 9),
-                   (MW - 14, _MENU_Y0 + 9)], fill=DIM)
-    if top + MENU_ROWS < len(titles):
-        yb = _MENU_Y0 + MENU_ROWS * _MENU_ROW_H - 4
-        d.polygon([(MW - 10, yb), (MW - 6, yb - 6), (MW - 14, yb - 6)], fill=DIM)
-    cf = _font(_REG, 11)
-    _center(d, "%d / %d" % (sel + 1, len(titles)), cf, MH - 15, DIM)
-    return img
+        d.polygon([(W - 6, y0 + 2), (W - 3, y0 + 6), (W - 9, y0 + 6)], fill=INK)
+    if top + rows_visible < len(rows):
+        yb = y0 + rows_visible * row_h - 2
+        d.polygon([(W - 6, yb), (W - 3, yb - 4), (W - 9, yb - 4)], fill=INK)
+
+    if footer:
+        ff = themes.font(t, 9)
+        d.text((3, H - 9), _ellipsize(d, footer, ff, W - 6), font=ff, fill=INK)
+    return _finalize(img)
 
 
-# ---- pause / context ------------------------------------------------
-
-def paused(title, words, idx, sentence_start, wpm, progress):
-    img, d = _canvas(MW, MH)
-    hf = _font(_BOLD, 13)
+def paused_frame(title, words, idx, sentence_start, wpm, progress, theme):
+    """Paused context: current sentence with current word bold+underlined."""
+    img, d = _canvas()
     right = "%d%%  %d wpm" % (round(progress * 100), wpm)
-    rf = _font(_REG, 11)
-    rw = d.textlength(right, font=rf)
-    d.text((8, 6), _ellipsize(d, title, hf, MW - 24 - rw), font=hf, fill=ACCENT)
-    d.text((MW - 8 - rw, 8), right, font=rf, fill=DIM)
-    d.line([(0, 25), (MW, 25)], fill=FAINT)
+    _header_band(d, title, note=right)
 
-    # wrap from the start of the current sentence; the current word is in
-    # accent, the rest of its sentence in FG, following sentences in DIM
-    body = _font(_REG, 16)
-    x, y = 8, 34
-    line_h = 21
-    in_current = True
-    for i in range(sentence_start, len(words)):
+    # Current sentence only: from sentence_start to next sentence end (at/after idx).
+    end = len(words)
+    for i in range(max(sentence_start, idx), len(words)):
         tok = words[i]
-        tw = d.textlength(tok + " ", font=body)
-        if x + tw > MW - 8:
-            if y + 2 * line_h > MH - 4:
-                # out of room: tack an ellipsis onto the end of this line
-                ew = d.textlength("\u2026", font=body)
-                d.text((min(x, MW - 8 - ew), y), "\u2026", font=body, fill=DIM)
+        if rsvp._SENT_END_CHARS.intersection(tok[-2:]):
+            end = i + 1
+            break
+    sentence = words[sentence_start:end]
+    if not sentence:
+        return _finalize(img)
+
+    reg = themes.font(theme, 10)
+    bold = themes.font(theme, 10, bold=True)
+    max_w = W - 6
+    y0, line_h = 15, 11
+    max_lines = max(1, (H - 2 - y0) // line_h)
+
+    # Build wrapped lines of (token, is_current) pairs.
+    lines, cur, cur_w = [], [], 0.0
+    for i, tok in enumerate(sentence):
+        abs_i = sentence_start + i
+        fnt = bold if abs_i == idx else reg
+        tw = d.textlength(tok + " ", font=fnt)
+        if cur and cur_w + tw > max_w:
+            lines.append(cur)
+            cur, cur_w = [], 0.0
+            if len(lines) == max_lines:
                 break
-            x = 8
-            y += line_h
-        colour = ACCENT if i == idx else (FG if in_current else DIM)
-        d.text((x, y), tok, font=body, fill=colour)
-        if i == idx:
-            wlen = d.textlength(tok, font=body)
-            d.line([(x, y + 19), (x + wlen, y + 19)], fill=ACCENT)
-        x += tw
-        if rsvp._SENT_END_CHARS.intersection(tok[-2:]) and i >= idx:
-            in_current = False
-    return img
+        cur.append((tok, abs_i == idx))
+        cur_w += tw
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    # Ellipsize last line if we ran out of room mid-sentence.
+    used = sum(len(ln) for ln in lines)
+    if used < len(sentence) and lines:
+        # replace last token cluster with ellipsized plain text
+        plain = " ".join(t for t, _ in lines[-1])
+        lines[-1] = [(_ellipsize(d, plain + " \u2026", reg, max_w), False)]
+
+    y = y0
+    for ln in lines:
+        x = 3
+        for tok, is_cur in ln:
+            fnt = bold if is_cur else reg
+            d.text((x, y), tok, font=fnt, fill=INK)
+            if is_cur:
+                wlen = d.textlength(tok, font=fnt)
+                d.line([(x, y + 10), (x + wlen, y + 10)], fill=INK)
+            x += d.textlength(tok + " ", font=fnt)
+        y += line_h
+    return _finalize(img)
+
+
+def info_frame(title, ext, position, total_words, wpm, time_read_secs):
+    """Read-only book info stack under a list-style header."""
+    img, d = _canvas()
+    _header_band(d, "BOOK")
+    t = _default_theme()
+    title_f = themes.font(t, 11, bold=True)
+    body = themes.font(t, 10)
+    y = 14
+    for line in _wrap(d, title, title_f, W - 6, 2):
+        d.text((3, y), line, font=title_f, fill=INK)
+        y += 12
+    facts = [
+        "Format: %s" % ((ext or "").lstrip(".").upper() or "TXT"),
+    ]
+    if total_words:
+        facts.append("Length: %s words" % fmt_words(total_words))
+        pos = position or 0
+        pct = int(100 * pos / total_words) if total_words else 0
+        left = ""
+        if wpm and pos < total_words:
+            left = "  ·  %s left" % fmt_minutes((total_words - pos) / max(1, wpm))
+        facts.append("Progress: %d%%%s" % (pct, left))
+    facts.append("Time read: %s" % fmt_minutes(time_read_secs / 60.0))
+    for fact in facts:
+        d.text((3, y), _ellipsize(d, fact, body, W - 6), font=body, fill=INK)
+        y += 12
+        if y > H - 10:
+            break
+    return _finalize(img)
 
 
 # ---- simple screens --------------------------------------------------
 
-def message(lines, hint=None, big=None):
+def message_frame(lines, hint=None, big=None):
     """Centred lines; ``big`` (optional) is drawn larger above them."""
-    img, d = _canvas(MW, MH)
-    f = _font(_BOLD, 18)
+    img, d = _canvas()
+    t = _default_theme()
+    f = themes.font(t, 11, bold=True)
     n = len(lines) + (1 if big else 0)
-    y = (MH - n * 26) // 2 - (8 if hint else 0)
+    y = (H - n * 14) // 2 - (6 if hint else 0)
     if big:
-        bf = _font(_BOLD, 26)
-        _center(d, big, bf, y - 8, ACCENT)
-        y += 36
+        bf = themes.font(t, 16, bold=True)
+        _center(d, big, bf, y - 2)
+        y += 18
     for line in lines:
-        _center(d, _ellipsize(d, line, f, MW - 16), f, y, FG)
-        y += 26
+        _center(d, _ellipsize(d, line, f, W - 8), f, y)
+        y += 14
     if hint:
-        _center(d, hint, _font(_REG, 12), MH - 24, DIM)
-    return img
+        _center(d, hint, themes.font(t, 9), H - 12)
+    return _finalize(img)
 
 
-def confirm_power():
-    return message(["Power off?"], hint="K1: yes    K2: no")
+def confirm_frame(text, yes_hint, no_hint):
+    """Generic yes/no confirm dialog."""
+    hint = "%s    %s" % (yes_hint, no_hint)
+    return message_frame([text], hint=hint)
 
 
-def the_end(title):
-    img, d = _canvas(MW, MH)
-    _center(d, "The End", _font(_BOLD, 26), 78, ACCENT)
-    tf = _font(_REG, 14)
-    _center(d, _ellipsize(d, title, tf, MW - 24), tf, 124, FG)
-    _center(d, "any key: back to library", _font(_REG, 12), MH - 24, DIM)
-    return img
+def end_frame(title):
+    img, d = _canvas()
+    t = _default_theme()
+    _center(d, "The End", themes.font(t, 16, bold=True), 18)
+    tf = themes.font(t, 11)
+    _center(d, _ellipsize(d, title, tf, W - 8), tf, 38)
+    _center(d, "any key: library", themes.font(t, 9), H - 12)
+    return _finalize(img)
 
 
-def splash_main():
-    img, d = _canvas(MW, MH)
-    bf = _font(_BOLD, 30)
-    # "Rapid" with its pivot letter highlighted, like a real frame
-    pre, ch, post = "Ra", "p", "id"
-    total = (d.textlength(pre, font=bf) + d.textlength(ch, font=bf)
-             + d.textlength(post, font=bf))
-    x = (MW - total) / 2
-    d.text((x, CENTER_Y - 18), pre, font=bf, fill=FG, anchor="lm")
-    x += d.textlength(pre, font=bf)
-    cx = x + d.textlength(ch, font=bf) / 2
-    d.text((x, CENTER_Y - 18), ch, font=bf, fill=ACCENT, anchor="lm")
-    x += d.textlength(ch, font=bf)
-    d.text((x, CENTER_Y - 18), post, font=bf, fill=FG, anchor="lm")
-    d.line([(cx, CENTER_Y - 18 - 42), (cx, CENTER_Y - 18 - 30)], fill=DIM)
-    d.line([(cx, CENTER_Y - 18 + 30), (cx, CENTER_Y - 18 + 42)], fill=DIM)
-    _center(d, "Reader", _font(_REG, 20), CENTER_Y + 30, DIM)
-    _center(d, "starting\u2026", _font(_REG, 12), MH - 30, FAINT)
-    return img
-
-
-# ====================================================================
-# Side cards (80x160 portrait)
-# ====================================================================
-
-def _side():
-    return _canvas(SW, SH)
-
-
-def _label(d, text, y=6):
-    _center(d, text, _font(_REG, 10), y, DIM, w=SW)
-
-
-def _vbar(d, x, y0, y1, frac, w=14):
-    """Vertical bar filling upward by ``frac``."""
-    frac = max(0.0, min(1.0, frac))
-    d.rectangle([x, y0, x + w - 1, y1], outline=FAINT)
-    fill_h = int(round((y1 - y0 - 3) * frac))
-    if fill_h > 0:
-        d.rectangle([x + 2, y1 - 2 - fill_h + 1, x + w - 3, y1 - 2], fill=ACCENT)
-
-
-def progress_card(progress, remaining_words, wpm, chapter=None):
-    """Left card while reading/paused: % done, bar, chapter, time left.
-    ``chapter`` is (n, total) or None when the book has no detected chapters."""
-    img, d = _side()
-    _label(d, "READ")
-    _center(d, "%d%%" % int(progress * 100), _font(_BOLD, 22), 20, FG, w=SW)
-    _vbar(d, SW // 2 - 7, 54, 122, progress)
-    if chapter:
-        _center(d, "ch %d/%d" % chapter, _font(_REG, 11), 128, DIM, w=SW)
-    mins = remaining_words / max(1, wpm)
-    _center(d, fmt_minutes(mins) + " left", _font(_REG, 11), 143, FG, w=SW)
-    return img
-
-
-def speed_card(wpm):
-    """Right card while reading: current pace and how to change it."""
-    img, d = _side()
-    _label(d, "SPEED")
-    _center(d, str(wpm), _font(_BOLD, 26), 18, FG, w=SW)
-    _center(d, "wpm", _font(_REG, 10), 50, DIM, w=SW)
-    frac = (wpm - config.MIN_WPM) / float(config.MAX_WPM - config.MIN_WPM)
-    _vbar(d, SW // 2 - 7, 66, 122, frac)
-    f = _font(_REG, 10)
-    _center(d, "K1 \u00d72  +", f, 130, DIM, w=SW)
-    _center(d, "K2 \u00d72  \u2212", f, 144, DIM, w=SW)
-    return img
-
-
-def hints_card(k1, k2):
-    """Right card: what the keys do. ``k1``/``k2`` are lists of
-    (gesture, action) pairs; K1 is drawn in the upper half to match the
-    physical key positions."""
-    img, d = _side()
-    kf, gf, af = _font(_BOLD, 12), _font(_REG, 10), _font(_REG, 11)
-    for base, key, items in ((0, "K1", k1), (SH // 2, "K2", k2)):
-        d.text((6, base + 5), key, font=kf, fill=ACCENT)
-        y = base + 23
-        for gesture, action in items[:4]:
-            d.text((6, y + 1), gesture, font=gf, fill=DIM)
-            d.text((32, y), _ellipsize(d, action, af, SW - 34), font=af, fill=FG)
-            y += 14
-    d.line([(6, SH // 2 - 1), (SW - 6, SH // 2 - 1)], fill=FAINT)
-    return img
-
-
-def book_card(title, ext, position=None, total_words=None, wpm=None):
-    """Left card in the library: details of the highlighted book."""
-    img, d = _side()
-    _label(d, "BOOK")
-    tf = _font(_BOLD, 12)
-    y = 20
-    for line in _wrap(d, title, tf, SW - 8, 5):
-        d.text((4, y), line, font=tf, fill=FG)
-        y += 15
-    y = max(y + 4, 100)
-    d.text((4, y), ext.lstrip(".").upper() or "TXT", font=_font(_REG, 10), fill=DIM)
-    if total_words:
-        d.text((4, y + 14), fmt_words(total_words) + " words",
-               font=_font(_REG, 10), fill=DIM)
-        pos = position or 0
-        if pos > 0:
-            pct = int(100 * pos / total_words)
-            d.text((4, y + 29), "%d%% read" % pct, font=_font(_BOLD, 11), fill=ACCENT)
-            if wpm:
-                d.text((4, y + 44), fmt_minutes((total_words - pos) / wpm) + " left",
-                       font=_font(_REG, 10), fill=FG)
-        else:
-            d.text((4, y + 29), "not started", font=_font(_REG, 11), fill=DIM)
-    else:
-        d.text((4, y + 14), "new", font=_font(_BOLD, 11), fill=ACCENT)
-        if wpm:
-            d.text((4, y + 29), "open to see", font=_font(_REG, 10), fill=DIM)
-            d.text((4, y + 43), "length", font=_font(_REG, 10), fill=DIM)
-    return img
-
-
-def side_message(lines, accent_first=False):
-    img, d = _side()
-    f = _font(_BOLD, 12)
-    y = (SH - len(lines) * 16) // 2
-    for i, line in enumerate(lines):
-        _center(d, line, f, y, ACCENT if (accent_first and i == 0) else FG, w=SW)
-        y += 16
-    return img
-
-
-def blank_side():
-    return _side()[0]
-
-
-def splash_side(which):
-    img, d = _side()
-    d.line([(SW // 2, SH // 2 - 20), (SW // 2, SH // 2 + 20)], fill=FAINT)
-    _center(d, "RAPID" if which == "left" else "READER", _font(_BOLD, 11),
-            SH // 2 + 28, DIM, w=SW)
-    return img
-
-
-# Key hints per app mode: (K1 items, K2 items)
-HINTS = {
-    "menu": ([("tap", "open"), ("\u00d72", "rescan")],
-             [("tap", "down"), ("\u00d72", "up"), ("hold", "power")]),
-    "paused": ([("tap", "play"), ("\u00d72", "next ch"), ("\u00d73", "forward")],
-               [("tap", "back"), ("\u00d72", "prev ch"), ("hold", "library")]),
-    "reading": ([("tap", "pause"), ("\u00d72", "faster"), ("\u00d73", "forward")],
-                [("tap", "back"), ("\u00d72", "slower"), ("hold", "library")]),
-    "confirm": ([("tap", "yes, off")], [("tap", "no")]),
-    "end": ([("tap", "library")], [("tap", "library")]),
-}
-
-
-def hints(mode):
-    return hints_card(*HINTS[mode])
+def splash():
+    """Boot splash: 'Rapid' with ORP pivot + ticks, 'Reader' below."""
+    img, d = _canvas()
+    th = _default_theme()
+    word = "Rapid"
+    orp = rsvp.orp_index(word)
+    pre, ch, post = word[:orp], word[orp], word[orp + 1:]
+    bf = themes.font(th, 18, bold=True)
+    rf = themes.font(th, 18)
+    # Measure with bold for pivot (ticks style).
+    total = (d.textlength(pre, font=rf) + d.textlength(ch, font=bf)
+             + d.textlength(post, font=rf))
+    x = (W - total) / 2
+    y = CENTER_Y - 8
+    if pre:
+        d.text((x, y), pre, font=rf, fill=INK, anchor="lm")
+        x += d.textlength(pre, font=rf)
+    w_ch = d.textlength(ch, font=bf)
+    d.text((x, y), ch, font=bf, fill=INK, anchor="lm")
+    _draw_ticks(d, x + w_ch / 2)
+    x += w_ch
+    if post:
+        d.text((x, y), post, font=rf, fill=INK, anchor="lm")
+    _center(d, "Reader", themes.font(th, 14), CENTER_Y + 14)
+    _center(d, "starting\u2026", themes.font(th, 9), H - 12)
+    return _finalize(img)

@@ -1,5 +1,6 @@
 """Book discovery, loading (.txt and .epub) and tokenization."""
 
+import bisect
 import html.parser
 import os
 import posixpath
@@ -156,15 +157,17 @@ def _tokenize(text):
     """Split text into words plus sentence-start, paragraph and chapter
     metadata.
 
-    Returns (words, sentence_starts, para_ends, chapter_starts) where
-    para_ends is a set of word indexes that close a paragraph and
-    chapter_starts is a sorted list of word indexes where a chapter/section
-    heading was detected.
+    Returns (words, sentence_starts, para_ends, chapter_starts,
+    chapter_titles) where para_ends is a set of word indexes that close a
+    paragraph, chapter_starts is a sorted list of word indexes where a
+    chapter/section heading was detected, and chapter_titles is a parallel
+    list of heading strings (same length/order as chapter_starts).
     """
     words = []
     sentence_starts = [0]
     para_ends = set()
     chapter_starts = []
+    chapter_titles = []
     # If the source has real heading markup (epub h1-h6), trust that signal
     # alone -- applying the plain-text heuristic too would also flag short
     # table-of-contents list items (e.g. "<li>Chapter 1. Loomings.</li>") as
@@ -186,26 +189,45 @@ def _tokenize(text):
             sentence_starts.append(len(words))
         if is_chapter:
             chapter_starts.append(len(words))
+            # Join heading tokens after the sentinel is removed so titles
+            # never include _CHAPTER_MARK.
+            chapter_titles.append(" ".join(toks))
         for tok in toks:
             words.append(tok)
             if _SENT_END.search(tok):
                 sentence_starts.append(len(words))
         para_ends.add(len(words) - 1)
-    # drop trailing/duplicate starts
+    # drop trailing/duplicate starts; keep titles aligned with unique starts
     starts = sorted({s for s in sentence_starts if s < len(words)})
-    chapters = sorted({c for c in chapter_starts if c < len(words)})
-    return words, starts, para_ends, chapters
+    by_start = {}
+    for c, title in zip(chapter_starts, chapter_titles):
+        if c < len(words) and c not in by_start:
+            by_start[c] = title
+    chapters = sorted(by_start)
+    titles = [by_start[c] for c in chapters]
+    return words, starts, para_ends, chapters, titles
 
 
 class Book:
     def __init__(self, path, title, words, sentence_starts, para_ends,
-                 chapter_starts=()):
+                 chapter_starts=(), chapter_titles=()):
         self.path = path
         self.title = title
         self.words = words
         self.sentence_starts = sentence_starts
         self.para_ends = para_ends
         self.chapter_starts = list(chapter_starts)
+        self.chapter_titles = list(chapter_titles)
+
+    def chapter_title(self, idx):
+        """Title of the chapter containing word index `idx`, or None if this
+        book has no detected chapters."""
+        if not self.chapter_starts:
+            return None
+        i = bisect.bisect_right(self.chapter_starts, idx) - 1
+        if i < 0:
+            return None
+        return self.chapter_titles[i]
 
     @classmethod
     def load(cls, path):
@@ -217,8 +239,20 @@ class Book:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
             title = stem
-        words, starts, para_ends, chapters = _tokenize(text)
-        return cls(path, title, words, starts, para_ends, chapters)
+        words, starts, para_ends, chapters, titles = _tokenize(text)
+        return cls(path, title, words, starts, para_ends, chapters, titles)
+
+
+def sort_by_recency(library, last_opened):
+    """library: list of (title, path), as returned by scan_library().
+    last_opened: {path: epoch_seconds, ...}. Returns a new list: books with
+    a last_opened timestamp first (most recent first), then never-opened
+    books after them sorted by title (case-insensitive)."""
+    def key(item):
+        title, path = item
+        t = last_opened.get(path)
+        return (0, -t) if t else (1, title.lower())
+    return sorted(library, key=key)
 
 
 def scan_library(directory=None):

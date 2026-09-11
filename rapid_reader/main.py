@@ -39,17 +39,80 @@ import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
+try:
+    from gpiozero import Button as _GpioButton
+except ImportError:  # tests / dev box without GPIO
+    _GpioButton = None
+
 import books
-import buttons
 import config
 import render
 import rsvp
 from display import open_display
 
 MENU, READING, PAUSED, CONFIRM_OFF, END = range(5)
+
+
+class _LegacyMultiTap:
+    """Temporary two-key multi-tap/hold helper for the LCD App (Phase 2
+    replaces this with buttons.Input). Kept here so the Phase 1B Key/Input
+    rewrite does not break the current App/tests."""
+
+    def __init__(self, pin, on_taps, on_hold=None, button=None):
+        self.on_taps = on_taps
+        self.on_hold = on_hold
+        self._count = 0
+        self._timer = None
+        self._held = False
+        self._lock = threading.Lock()
+        if button is None:
+            button = _GpioButton(pin, pull_up=True, bounce_time=0.03,
+                                 hold_time=config.HOLD_TIME)
+        self.btn = button
+        self.btn.when_pressed = self._pressed
+        self.btn.when_held = self._on_held
+        self.btn.when_released = self._released
+
+    def _pressed(self):
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+    def _on_held(self):
+        with self._lock:
+            self._held = True
+            self._count = 0
+        if self.on_hold:
+            self.on_hold()
+
+    def _released(self):
+        fire_later = False
+        with self._lock:
+            if self._held:
+                self._held = False
+                return
+            self._count += 1
+            self._timer = threading.Timer(config.TAP_WINDOW, self._finalize)
+            self._timer.daemon = True
+            fire_later = True
+        if fire_later:
+            self._timer.start()
+
+    def _finalize(self):
+        with self._lock:
+            n = self._count
+            self._count = 0
+            self._timer = None
+        if n and self.on_taps:
+            self.on_taps(n)
+
+
+
 
 
 class State:
@@ -89,7 +152,7 @@ class App:
         # display/button_cls are injectable so the app logic can run under
         # test (or on a dev box) without SPI/GPIO hardware
         self.display = display if display is not None else open_display()
-        button_cls = button_cls or buttons.TapButton
+        button_cls = button_cls or _LegacyMultiTap
         self.events = queue.Queue()
         self.state = State()
         self.mode = MENU

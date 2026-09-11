@@ -1,10 +1,9 @@
-"""Three-screen display facade used by the app.
+"""Single-panel display facade used by the app.
 
-``Display`` owns the centre panel plus the two portrait side panels and
-exposes just what the app needs: ``show(main=, left=, right=)``,
-``backlight(...)``, ``splash()`` and ``sleep()``. The panels can be any
-objects with ``show(image)``, ``show_raw(bytes)``, ``backlight(level)`` and
-``sleep()`` (see ``lcd.ST77xx``); tests pass recording fakes.
+``Display`` owns one SH1106 panel and exposes just what the app needs:
+``show(image)``, ``contrast``, ``invert``, ``splash()``, ``sleep()`` and
+``wake()``. The panel can be any object with those methods (see
+``oled.SH1106``); tests pass recording fakes.
 
 :func:`open_display` builds the real thing, retrying while the SPI/GPIO
 device nodes are still appearing during early boot.
@@ -17,56 +16,42 @@ import config
 
 
 class Display:
-    def __init__(self, main, left, right):
-        self.main = main
-        if config.SWAP_SIDES:
-            left, right = right, left
-        self.left = left
-        self.right = right
+    def __init__(self, panel):
+        self.panel = panel
 
-    @property
-    def panels(self):
-        return (self.main, self.left, self.right)
+    def show(self, image):
+        self.panel.show(image)
 
-    def show(self, main=None, left=None, right=None):
-        """Push whichever frames are given; the others are left untouched."""
-        if main is not None:
-            self.main.show(main)
-        if left is not None:
-            self.left.show(left)
-        if right is not None:
-            self.right.show(right)
+    def contrast(self, value):
+        self.panel.contrast(value)
 
-    def backlight(self, main=None, sides=None):
-        if main is not None:
-            self.main.backlight(main)
-        if sides is not None:
-            self.left.backlight(sides)
-            self.right.backlight(sides)
+    def invert(self, on):
+        self.panel.invert(on)
 
-    def splash(self, directory=None):
-        """Show the pre-rendered boot splash (raw RGB565 files) if present.
-        Returns True when all three files were found and pushed."""
-        directory = directory or config.SPLASH_DIR
-        frames = []
-        for name, panel in (("main", self.main), ("left", self.left),
-                            ("right", self.right)):
-            path = os.path.join(directory, name + ".rgb565")
-            try:
-                with open(path, "rb") as f:
-                    buf = f.read()
-            except OSError:
-                return False
-            if len(buf) != panel.width * panel.height * 2:
-                return False
-            frames.append((panel, buf))
-        for panel, buf in frames:
-            panel.show_raw(buf)
+    def splash(self, path=None):
+        """Show the pre-rendered boot splash (raw SH1106 page bytes) if present.
+
+        Loads ``config.SPLASH_DIR + '/splash.bin'`` (or ``path``), a raw
+        1024-byte buffer, and pushes it via ``show_raw`` so boot does not
+        need Pillow. Returns True when the file existed, was exactly 1024
+        bytes, and was pushed; False otherwise.
+        """
+        path = path or os.path.join(config.SPLASH_DIR, "splash.bin")
+        try:
+            with open(path, "rb") as f:
+                buf = f.read()
+        except OSError:
+            return False
+        if len(buf) != 1024:
+            return False
+        self.panel.show_raw(buf)
         return True
 
     def sleep(self):
-        for p in self.panels:
-            p.sleep()
+        self.panel.sleep()
+
+    def wake(self):
+        self.panel.wake()
 
 
 def _retryable(exc):
@@ -76,11 +61,10 @@ def _retryable(exc):
 
 
 def open_display(retry_secs=None, log=print):
-    """Initialise the three panels on the HAT, retrying for a while if the
-    kernel has not created /dev/spidev* / /dev/gpiochip* yet. Backlights
-    come up only after the panels have been blanked, so there is no flash of
-    garbage on power-up."""
-    import lcd
+    """Initialise the OLED on the HAT, retrying for a while if the kernel
+    has not created /dev/spidev* / /dev/gpiochip* yet. The panel is blanked
+    inside ``init()`` before display-on, so there is no flash of garbage."""
+    import oled
     retry_secs = config.HW_RETRY_SECS if retry_secs is None else retry_secs
     deadline = time.monotonic() + retry_secs
     attempt = 0
@@ -88,18 +72,16 @@ def open_display(retry_secs=None, log=print):
         attempt += 1
         chip = None
         try:
-            chip = lcd.open_gpiochip(config.GPIO_CHIP)
-            panels = []
-            for cls, cfg, flip in ((lcd.ST7789, config.MAIN, config.MAIN_ROTATE_180),
-                                   (lcd.ST7735S, config.LEFT, config.SIDE_ROTATE_180),
-                                   (lcd.ST7735S, config.RIGHT, config.SIDE_ROTATE_180)):
-                io = lcd.SpiIO(chip, pwm_hz=config.BACKLIGHT_PWM_HZ, **cfg)
-                panels.append(cls(io, rotate_180=flip))
+            chip = oled.open_gpiochip(config.GPIO_CHIP)
+            io = oled.SpiIO(chip, spi=config.OLED_SPI, dc=config.OLED_DC,
+                            rst=config.OLED_RST, speed_hz=config.OLED_SPEED_HZ)
+            panel = oled.SH1106(io, col_offset=config.OLED_COL_OFFSET,
+                                rotate_180=config.ROTATE_180)
             break
         except Exception as e:
             if chip is not None:
                 try:
-                    lcd.close_gpiochip(chip)
+                    oled.close_gpiochip(chip)
                 except Exception:
                     pass
             if not _retryable(e) or time.monotonic() > deadline:
@@ -107,8 +89,7 @@ def open_display(retry_secs=None, log=print):
             if attempt in (1, 8, 40):
                 log("display: hardware not ready (%s), retrying" % e)
             time.sleep(0.25)
-    for p in panels:
-        p.init()
-    disp = Display(*panels)
-    disp.backlight(main=config.BL_MAIN, sides=config.BL_SIDE)
+    panel.init()
+    disp = Display(panel)
+    disp.contrast(config.IDLE_ACTIVE_CONTRAST)
     return disp

@@ -1,4 +1,4 @@
-"""Multi-tap + hold detection for the HAT's two keys (K1/K2)."""
+"""8-key input: tap / hold / repeat for the SH1106 OLED HAT."""
 
 import threading
 
@@ -10,60 +10,87 @@ except ImportError:  # tests / dev box without GPIO
 import config
 
 
-class TapButton:
-    """Counts taps within a short window; distinguishes press-and-hold.
+class Key:
+    """One physical button/joystick direction.
 
-    on_taps(n) is called with the tap count (1, 2, 3...).
-    on_hold() is called once when the button is held HOLD_TIME seconds.
-    `button` may be any object exposing when_pressed/when_held/when_released
-    callback slots (a gpiozero.Button by default).
+    on_event(name, kind) is called with kind="tap" on a quick
+    press-and-release (released before config.HOLD_DELAY elapses);
+    kind="hold" once, config.HOLD_DELAY after press, if `repeats` is
+    False and the key is still held; kind="repeat" every
+    config.REPEAT_SECS starting config.HOLD_DELAY after press, for as
+    long as the key stays held, if `repeats` is True. Only one of
+    tap/hold/repeat-events fires per press-release cycle's press phase;
+    tap is mutually exclusive with hold/repeat.
+
+    `button` may be any object exposing settable `when_pressed` /
+    `when_released` attributes (a gpiozero.Button by default, or a test
+    fake); `Key` never touches gpiozero's own hold_time/when_held
+    machinery -- it drives its own threading.Timer so the "first hold"
+    delay and the "repeat interval" can be different values.
     """
 
-    def __init__(self, pin, on_taps, on_hold=None, button=None):
-        self.on_taps = on_taps
-        self.on_hold = on_hold
-        self._count = 0
+    def __init__(self, name, on_event, repeats, button=None):
+        self.name = name
+        self.on_event = on_event
+        self.repeats = repeats
         self._timer = None
-        self._held = False
+        self._fired = False   # True once this press has emitted hold/repeat
         self._lock = threading.Lock()
         if button is None:
-            button = Button(pin, pull_up=True, bounce_time=0.03,
-                            hold_time=config.HOLD_TIME)
+            button = Button(config.PINS[name], pull_up=True, bounce_time=0.03)
         self.btn = button
         self.btn.when_pressed = self._pressed
-        self.btn.when_held = self._on_held
         self.btn.when_released = self._released
 
     def _pressed(self):
         with self._lock:
+            self._fired = False
+            self._timer = threading.Timer(config.HOLD_DELAY, self._fire)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _fire(self):
+        with self._lock:
+            self._fired = True
+            repeats = self.repeats
+        self.on_event(self.name, "repeat" if repeats else "hold")
+        if repeats:
+            with self._lock:
+                self._timer = threading.Timer(config.REPEAT_SECS, self._fire)
+                self._timer.daemon = True
+                self._timer.start()
+
+    def _released(self):
+        with self._lock:
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
+            fired = self._fired
+            self._fired = False
+        if not fired:
+            self.on_event(self.name, "tap")
 
-    def _on_held(self):
-        with self._lock:
-            self._held = True
-            self._count = 0
-        if self.on_hold:
-            self.on_hold()
 
-    def _released(self):
-        fire_later = False
-        with self._lock:
-            if self._held:
-                self._held = False
-                return
-            self._count += 1
-            self._timer = threading.Timer(config.TAP_WINDOW, self._finalize)
-            self._timer.daemon = True
-            fire_later = True
-        if fire_later:
-            self._timer.start()
+class Input:
+    """Owns all 8 Key objects. on_event(name, kind) is called for every
+    key's event, already remapped for config.ROTATE_180.
 
-    def _finalize(self):
-        with self._lock:
-            n = self._count
-            self._count = 0
-            self._timer = None
-        if n and self.on_taps:
-            self.on_taps(n)
+    button_cls, if given, is a zero-arg factory called once per key to
+    build an injectable stand-in for gpiozero.Button (same pattern as
+    App(display=None, button_cls=None)). When omitted, each Key builds a
+    real gpiozero.Button on the (possibly rotation-swapped) BCM pin.
+    """
+
+    def __init__(self, on_event, button_cls=None):
+        pins = dict(config.PINS)
+        if config.ROTATE_180:
+            pins["up"], pins["down"] = pins["down"], pins["up"]
+            pins["left"], pins["right"] = pins["right"], pins["left"]
+        self.keys = {}
+        for name in config.PINS:
+            repeats = name in config.REPEATING_KEYS
+            if button_cls is not None:
+                button = button_cls()
+            else:
+                button = Button(pins[name], pull_up=True, bounce_time=0.03)
+            self.keys[name] = Key(name, on_event, repeats, button=button)
