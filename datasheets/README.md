@@ -90,8 +90,9 @@ linked above *is* the user manual (specs, pinout, SPI/library setup,
 demo download, framebuffer/desktop setup, FAQ).
 
 The vendor demo code (`Zero_LCD_HAT_A_Demo.zip`, linked from the wiki) is
-not committed here; the init sequences it uses were transcribed into
-`rapid_reader/lcd.py`.
+not committed here. Its init sequences were transcribed into the old
+three-LCD driver (`rapid_reader/lcd.py`), which was removed in the
+SH1106 overhaul; the current app uses `rapid_reader/oled.py` instead.
 
 ### Board summary
 

@@ -10,6 +10,25 @@ depends on the active theme), so your eyes never move. Themes pick
 sans / serif / mono faces from DejaVu. Reading position, speed, and
 settings are saved per book automatically.
 
+## Features
+
+- Library of `.txt` / `.epub` books; open resumes last position
+- RSVP playback with ORP pivot; WPM adjust; sentence and chapter jump
+- Bookmarks, chapters list, book info; auto-save every
+  `SAVE_EVERY_WORDS` words and on pause / leave / SIGTERM
+- Themes, word size, pivot style; session-only contrast nudge
+- Idle dim then sleep outside Reading (wake swallows the first key)
+- Power-cut resume via `in_book` in `state.json`
+- Power off / reboot from Library (K1 hold) or System menu
+
+## Documentation
+
+| Doc | Role |
+|-----|------|
+| [CONTROLS.md](CONTROLS.md) | Full key reference, menus, settings, themes |
+| [datasheets/README.md](datasheets/README.md) | Hardware pinouts and datasheet index |
+| [docs/README.md](docs/README.md) | Index — living docs vs historical plan briefs |
+
 ## Repository layout
 
 | Path | Purpose |
@@ -23,7 +42,7 @@ settings are saved per book automatically.
 | `rapid_reader/render.py` | Every screen as a PIL image (drawing only, no hardware) |
 | `rapid_reader/theme.py` | Theme presets (palette, font face, pivot style) |
 | `rapid_reader/state.py` | Persistent `state.json` (settings, per-book position/bookmarks) |
-| `rapid_reader/contracts.py` | Shared `Theme` / `Screen` interfaces and documented control map |
+| `rapid_reader/contracts.py` | Shared `Theme` / `Screen` interfaces, control map, state v2 schema |
 | `rapid_reader/rsvp.py` | ORP + per-word timing (pure functions) |
 | `rapid_reader/books.py` | Library scan, `.txt`/`.epub` loading, tokenizer, chapter heuristics |
 | `rapid_reader/buttons.py` | Tap / hold / repeat detection on top of `gpiozero.Button` |
@@ -31,13 +50,14 @@ settings are saved per book automatically.
 | `system/rapid-reader.service` | systemd unit installed on the device |
 | `tools/build_card.sh` | Builds a bootable SD card offline (flash, grow, chroot apt, deploy) |
 | `tools/salvage_card.sh` | Copies wifi/user/books off an old card before it is wiped |
-| `tools/make_splash.py` | Pre-renders the boot splash for the OLED |
+| `tools/make_splash.py` | Pre-renders the boot splash (`splash.bin`) for the OLED |
+| `tools/pdf_to_txt.py` | Internet Archive–style PDF → cleaned `.txt` via `pdftotext` |
+| `tools/flash_ssh_wifi.sh` | Temporary SSH/wifi bring-up flash (stock image only; does **not** install the app) |
 | `datasheets/` | Datasheets for the Pi Zero W and the OLED HAT (see its README) |
+| `docs/` | Historical SH1106 overhaul phase briefs (see [docs/README.md](docs/README.md)) |
 | `ebooks/` | Sample library (public-domain Gutenberg texts + a welcome tutorial) |
 | `tests/` | Hardware-free regression tests (`pytest`) |
 | `sdcard_build/` | Raspberry Pi OS Lite image used to build cards (not committed) |
-
-See [CONTROLS.md](CONTROLS.md) for the full key reference.
 
 ## Hardware
 
@@ -133,6 +153,17 @@ list context).
 | Confirm | K3 yes; K1 no |
 | Idle | dim then sleep; any key wakes (swallowed) |
 
+Menus, settings, themes, display contrast, and System rows are fully
+listed in [CONTROLS.md](CONTROLS.md).
+
+## Settings & themes
+
+Defaults: theme `night`, pivot `ticks`, word size `medium`, 250 wpm.
+Five presets (`night`, `paper`, `focus`, `dim`, `mono`) pick invert,
+DejaVu face, default pivot style, and contrast. Word size and pivot
+style cycle in Settings; Display contrast is session-only (not in
+`state.json`). See CONTROLS for the full tables.
+
 ## Adding books
 
 Drop `.txt` or `.epub` files into `/home/reader/ebooks`:
@@ -156,6 +187,17 @@ python3 tools/pdf_to_txt.py book.pdf --out ebooks/
 Copy the resulting `.txt` to the device as above.
 
 ## Development & tests
+
+The app is a flat module tree under `rapid_reader/` (not an installable
+package). Imports are top-level (`import config`, not
+`rapid_reader.config`); `boot.py`, `main.py`, and `tests/conftest.py`
+put `rapid_reader/` on `sys.path`.
+
+Runtime knobs are **Python constants** in `config.py` (pins, paths,
+WPM, idle, font dirs, settings defaults). There is no app CLI and no
+env-based config — edit `/opt/rapid-reader/config.py` on the device and
+`sudo systemctl restart rapid-reader`. State v2 schema is documented at
+the top of [`rapid_reader/contracts.py`](rapid_reader/contracts.py).
 
 Tests run anywhere with Python 3 + Pillow + pytest; no Pi, SPI or GPIO
 is needed. DejaVu Sans / Serif / SansMono must be installed
@@ -190,6 +232,7 @@ Coverage:
 
 To preview the screens without hardware, call the `render` functions
 and `.save()` the returned images (see `tests/test_render.py`).
+Regenerate the boot splash with `python3 tools/make_splash.py`.
 
 ## Building a card
 

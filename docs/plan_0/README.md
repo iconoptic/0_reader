@@ -1,24 +1,31 @@
-# Rapid Reader 1.0 — SH1106 overhaul: phase prompts
+# Rapid Reader 1.0 — SH1106 overhaul: phase prompts (historical)
 
-This directory holds the detailed, self-contained brief for each phase of the
-SH1106 OLED HAT port/rewrite (see the top-level plan reconstructed in chat).
-Each `phase-*.md` file is written to be handed directly to a coding agent as
-its task prompt — it repeats the hardware facts, exact interfaces and file
-list it needs so the agent does not have to re-derive them or read the whole
-codebase from scratch.
+**Status: overhaul landed.** The tree now runs the SH1106 OLED HAT
+single-screen app (`oled.py`, screen stack, themes, state v2). For
+current behavior, hardware, and controls, use the root
+[README.md](../../README.md) and [CONTROLS.md](../../CONTROLS.md) — not
+the per-phase status lines inside the briefs below.
 
-Nothing in the codebase has been changed yet. `rapid_reader/` is still the
-Waveshare Zero LCD HAT (A) three-screen build; every phase below is future
-work.
+This directory keeps the detailed, self-contained brief for each phase
+of the SH1106 port/rewrite. Each `phase-*.md` was written to be handed
+directly to a coding agent as its task prompt. They remain useful as
+design history and interface rationale, but they are **not** a live
+roadmap: many files still say "not started" or refer to deleting
+`lcd.py` even though that work is done.
 
-## Which phases get a nimble-agent prompt?
+Phase 0–3 work is reflected in the current codebase and living docs.
+[phase-4-bringup-checklist.md](phase-4-bringup-checklist.md) remains a
+human hardware checklist (orientation, real-panel timing, SIGTERM on
+device) and is not an agent coding task.
+
+## Which phases got a nimble-agent prompt?
 
 "Nimble" here means a small/fast/cheap model given a single, narrow,
-well-specified task with little room to improvise. That works well when the
-task is mechanical or algorithmic and the interfaces it must honour are
-pinned down in advance. It works badly when the task requires making a lot
-of unstated design judgment calls or touches many interacting pieces of
-state at once.
+well-specified task with little room to improvise. That works well when
+the task is mechanical or algorithmic and the interfaces it must honour
+are pinned down in advance. It works badly when the task requires making
+a lot of unstated design judgment calls or touches many interacting
+pieces of state at once.
 
 | Phase | Nimble-agent prompt? | Why |
 |---|---|---|
@@ -31,7 +38,7 @@ state at once.
 | 3 — Tooling/docs | **Yes** — [`phase-3-tooling-docs.md`](phase-3-tooling-docs.md) | Config-file/text edits with a clear diff target (old pin table → new pin table). Low risk if wrong, easy to review. |
 | 4 — Bring-up | **No — not an agent task at all** — [`phase-4-bringup-checklist.md`](phase-4-bringup-checklist.md) | Requires physical hardware in hand (orientation, timing on the real panel, SIGTERM on the real service). Written as a human checklist, not a coding-agent prompt. |
 
-## Recommended execution order
+## Recommended execution order (as originally planned)
 
 1. Phase 0 alone first — it is a hard dependency for everything else and is
    small enough to review completely before fanning out.

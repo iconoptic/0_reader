@@ -72,6 +72,85 @@ the same skeleton:
 | K2 | open menu (no-op when already on the menu) |
 | K3 | context action when one exists (e.g. delete bookmark); otherwise no-op |
 
+## Menus (K2)
+
+K2 opens a list menu. Contents depend on whether a book is open:
+
+| Context | Items |
+|---------|-------|
+| Library (no book open) | Settings, System |
+| Reading / Paused / in-book lists | Bookmark this page, Chapters, Bookmarks, Book info, Settings, System, Save & close book |
+
+- **Bookmark this page** — saves the current word index, then pops back.
+- **Chapters** / **Bookmarks** / **Book info** — push the corresponding screen.
+- **Save & close book** — same as leaving to Library (position saved).
+- **End of book** — any key clears the in-memory book and returns to the Library (so K2 there shows the short menu again).
+
+## Settings
+
+Press on a row activates it. Word size and pivot style **cycle** through
+their values and save immediately; Theme and Display push sub-screens.
+
+| Row | Behavior |
+|-----|----------|
+| Word size | Cycles `small` → `medium` → `large` |
+| Pivot style | Cycles `ticks` → `underline` → `box` → `bold` |
+| Theme | Opens the theme picker |
+| Display | Opens session contrast adjust |
+
+Defaults (`config.SETTINGS_DEFAULTS`): theme `night`, pivot `ticks`, word size `medium`, wpm `DEFAULT_WPM`.
+
+## Themes
+
+Presets from `theme.THEMES`. Selecting one applies it, keeps your
+current pivot-style override, and returns to Settings. Active theme is
+marked with `*`.
+
+| Key | Name | Invert | Font | Default pivot | Contrast |
+|-----|------|--------|------|---------------|----------|
+| `night` | Night | no | sans | ticks | `0xCF` |
+| `paper` | Paper | yes | serif | underline | `0xCF` |
+| `focus` | Focus | no | sans | box | `0xFF` |
+| `dim` | Dim | no | mono | bold | `0x40` |
+| `mono` | Mono | no | mono | ticks | `0xCF` |
+
+Pivot style in Settings overrides the theme's default pivot for drawing;
+changing theme does not reset a custom pivot style.
+
+## Display (contrast)
+
+Session-only contrast nudge (not written to `state.json`):
+
+| Input | Action |
+|-------|--------|
+| up / down (repeat) | contrast ± `0x10` (clamped 0–255) |
+| K1 tap | back (keeps the nudge for this session) |
+
+Resets to the active theme's contrast on the next theme change or app
+restart. Idle dim/off still apply on top of this while idle.
+
+## System
+
+| Row | Action |
+|-----|--------|
+| IP address | Shows the device IP (or `no network`) |
+| Disk free | Free space under the books directory |
+| Version | `config.VERSION` |
+| Reboot | Confirm, then reboot |
+| Power off | Confirm, save state, then power off |
+
+Reboot and power-off use `sudo -n` when not running as root (passwordless
+sudo on the appliance image).
+
+## Bookmarks
+
+| Input | Action |
+|-------|--------|
+| press | jump to that word index and return to Paused |
+| K3 | confirm delete of the highlighted bookmark |
+
+Empty list shows: `No bookmarks yet.` / `Menu > Bookmark this page`.
+
 ## Confirm dialogs
 
 | Input | Action |
@@ -79,6 +158,9 @@ the same skeleton:
 | K3 tap | yes |
 | K1 tap | no |
 | other keys | ignored |
+
+Used for power-off (Library K1 hold or System), reboot, and bookmark
+delete.
 
 ## Idle
 
