@@ -163,10 +163,14 @@ class ReadingScreen(Screen):
 
 class PausedScreen(Screen):
     def frame(self, app):
+        flash = (app._flash_text
+                 if app._flash_text and time.monotonic() < app._flash_until
+                 else None)
         return render.paused_frame(
             app.book.title, app.book.words, app.idx,
             app.sentence_start(app.idx), app.state.settings["wpm"],
-            min(1.0, app.idx / max(1, len(app.book.words))), app.theme)
+            min(1.0, app.idx / max(1, len(app.book.words))), app.theme,
+            flash=flash)
 
     def handle(self, app, event):
         name, kind = event
@@ -239,6 +243,8 @@ class EndScreen(Screen):
     def handle(self, app, event):
         # Match leave_to_library(): clear the in-memory book so Library K2
         # shows the reduced Settings/System menu (position already saved).
+        # pop_to_root always lands on LibraryScreen even if resume left no
+        # library under this End/Reading stack.
         app.book = None
         app.pop_to_root()
 
@@ -446,7 +452,8 @@ class DisplaySettingsScreen(Screen):
 
 
 class SystemScreen(ListScreen):
-    _ITEMS = ("IP address", "Disk free", "Version", "Reboot", "Power off")
+    _ITEMS = ("IP address", "Disk free", "Version", "Screen test",
+              "Reboot", "Power off")
 
     def items(self, app):
         return list(self._ITEMS)
@@ -462,6 +469,8 @@ class SystemScreen(ListScreen):
             app.push(MessageScreen([self._disk_free(config.BOOKS_DIR)]))
         elif item == "Version":
             app.push(MessageScreen([getattr(config, "VERSION", "dev")]))
+        elif item == "Screen test":
+            app.push(ScreenTestScreen())
         elif item == "Reboot":
             app.push(ConfirmScreen("Reboot now?", self._reboot))
         elif item == "Power off":
@@ -501,3 +510,197 @@ class SystemScreen(ListScreen):
         import subprocess
         argv = [cmd] if os.geteuid() == 0 else ["sudo", "-n", cmd]
         subprocess.call(argv)
+
+
+class ScreenTestScreen(Screen):
+    """Full-screen black/white toggle for spotting stuck OLED pixels."""
+
+    def __init__(self):
+        self._ink = True  # True = all pixels on (white)
+
+    def frame(self, app):
+        from PIL import Image
+        fill = 255 if self._ink else 0
+        return Image.new("L", (config.OLED_W, config.OLED_H), fill)
+
+    def handle(self, app, event):
+        name, kind = event
+        if name == "k1" and kind == "tap":
+            app.pop()
+        elif name in ("press", "up", "down") and kind == "tap":
+            self._ink = not self._ink
+            app.redraw()
+
+
+
+# Stage names the helper writes to config.OTA_PROGRESS ("<n>/<total>
+# <stage>"), mapped to the label shown on the progress screen. See
+# docs/plan_1/phase-0-ota-contracts.md §5 — this is the full stage list,
+# in order; STAGE_TOTAL must match the helper's own count.
+_OTA_STAGE_LABELS = {
+    "verifying": "Verifying...",
+    "copying": "Copying...",
+    "committing": "Installing...",
+    "restarting": "Restarting...",
+}
+
+
+def _parse_ota_progress(text):
+    """Parse one "<current>/<total> <stage>" line into (fraction, label).
+    Returns None on anything unparseable, so a torn read (helper mid
+    rewrite) or a stage name we don't recognize falls back to the
+    indeterminate label rather than showing a bogus fraction."""
+    try:
+        counts, stage = text.split(None, 1)
+        current, total = counts.split("/", 1)
+        current, total = int(current), int(total)
+    except (ValueError, AttributeError):
+        return None
+    label = _OTA_STAGE_LABELS.get(stage.strip())
+    if label is None or total <= 0:
+        return None
+    return max(0.0, min(1.0, current / total)), label
+
+
+class OtaScreen(Screen):
+    """Update UI: non-dismissible while applying, dismissible after a
+    genuine failure. `_concluded` means the apply attempt is over
+    (success or failure) and `tick` has nothing left to do; `_failed`
+    means it specifically failed, which is what gates dismissal, idle
+    handling, and the on-disk failure marker (see
+    docs/plan_1/phase-0-ota-contracts.md §§1-2).
+
+    Progress is read from config.OTA_PROGRESS, written by the helper as
+    it moves through real stages (§5) — never a synthetic animation.
+    The helper runs under subprocess.Popen so `tick` returns promptly on
+    the main loop's 0.15s OTA cadence instead of blocking it for the
+    whole apply; config.OTA_TIMEOUT_SECS bounds how long a wedged helper
+    can hold this non-dismissible screen before we kill it and fail.
+    """
+
+    _KILL_GRACE_SECS = 5.0
+
+    def __init__(self):
+        self._fraction = 0.0
+        self._label = "Updating..."
+        self._phase = "boot"  # boot -> spawned -> concluded
+        self._concluded = False
+        self._failed = False
+        self._proc = None
+        self._spawned_at = None
+        self._killed_at = None
+
+    def frame(self, app):
+        return render.progress_frame(self._fraction, self._label)
+
+    def handle(self, app, event):
+        name, kind = event
+        if self._failed and name == "k1" and kind == "tap":
+            app.pop_to_root()
+            return
+        # Otherwise swallow all input: in-progress must not be
+        # interrupted, and a concluded-but-not-yet-restarted success has
+        # nothing useful for K1/K2/K3 to do before the service restarts.
+
+    def tick(self, app):
+        if self._concluded:
+            return
+        if self._phase == "boot":
+            self._spawn(app)
+            return
+        if time.monotonic() - self._spawned_at >= config.OTA_TIMEOUT_SECS:
+            self._escalate(app)
+            return
+        rc = self._proc.poll()
+        if rc is None:
+            self._refresh_progress(app)
+            return
+        if rc == 0:
+            # Successful apply restarts the service (SIGTERM). If we are
+            # still here, the restart just hasn't landed yet — this is
+            # not a failure.
+            self._concluded = True
+            self._fraction = 1.0
+            self._label = "Restarting..."
+            app.redraw()
+            return
+        self._fail(app, "exit %d" % rc)
+
+    def _spawn(self, app):
+        import os
+        import subprocess
+        # Clear `pending` immediately before invoking the helper: a
+        # crashed, killed, or never-started helper must not leave the
+        # device re-entering this screen on every boot (F1; see
+        # docs/plan_1/phase-0-ota-contracts.md §1).
+        try:
+            os.remove(config.OTA_PENDING)
+        except OSError:
+            pass
+        argv = ([config.OTA_APPLY] if os.geteuid() == 0
+                else ["sudo", "-n", config.OTA_APPLY])
+        try:
+            self._proc = subprocess.Popen(argv)
+        except OSError as exc:
+            self._fail(app, "spawn error: %s" % exc)
+            return
+        self._spawned_at = time.monotonic()
+        self._phase = "spawned"
+        self._refresh_progress(app)
+
+    def _refresh_progress(self, app):
+        fraction, label = 0.0, "Updating..."
+        try:
+            with open(config.OTA_PROGRESS) as f:
+                parsed = _parse_ota_progress(f.read())
+        except OSError:
+            parsed = None
+        if parsed is not None:
+            fraction, label = parsed
+        self._fraction, self._label = fraction, label
+        app.redraw()
+
+    def _escalate(self, app):
+        """Past config.OTA_TIMEOUT_SECS with the helper still running:
+        SIGTERM, give it _KILL_GRACE_SECS to exit, then SIGKILL. Either
+        way this attempt ends as a timeout failure — a helper that
+        ignores SIGTERM has already gone far enough wrong that letting
+        it keep running is not a reasonable third option."""
+        if self._killed_at is None:
+            try:
+                self._proc.terminate()
+            except OSError:
+                pass
+            self._killed_at = time.monotonic()
+            self._label = "Update timed out, stopping..."
+            app.redraw()
+            return
+        if self._proc.poll() is not None:
+            self._fail(app, "timeout")
+            return
+        if time.monotonic() - self._killed_at >= self._KILL_GRACE_SECS:
+            try:
+                self._proc.kill()
+                self._proc.wait()
+            except OSError:
+                pass
+            self._fail(app, "timeout")
+
+    def _fail(self, app, reason):
+        """Mark this attempt as genuinely failed: dismissible, subject to
+        idle dim/off again, and recorded on disk so a reboot before the
+        next host sync does not re-enter this screen."""
+        import os
+        self._concluded = True
+        self._failed = True
+        self._fraction = 1.0
+        self._label = "Update failed (%s)" % reason
+        try:
+            os.makedirs(config.OTA_DIR, exist_ok=True)
+            with open(config.OTA_FAILED, "w") as f:
+                f.write("%s %s\n" % (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    reason))
+        except OSError:
+            pass
+        app.redraw()

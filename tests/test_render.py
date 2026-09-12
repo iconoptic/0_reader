@@ -233,9 +233,23 @@ def test_fmt_helpers():
     assert render.fmt_minutes(45) == "45m"
     assert render.fmt_minutes(72) == "1h 12m"
     assert render.fmt_minutes(60 * 12) == "12h"
+    assert render.fmt_duration_hms(45) == "45s"
+    assert render.fmt_duration_hms(90) == "1m 30s"
+    assert render.fmt_duration_hms(2 * 3600 + 15 * 60 + 30) == "2h 15m 30s"
+    assert render.fmt_duration_hms(3 * 86400 + 2 * 3600 + 15 * 60 + 30) == (
+        "3d 2h 15m 30s")
     assert render.fmt_words(269) == "269"
     assert render.fmt_words(1500) == "1.5k"
     assert render.fmt_words(215845) == "216k"
+
+
+def test_progress_frame_and_remaining_overlay():
+    img = render.progress_frame(0.5, "Updating...")
+    assert img.size == (config.OLED_W, config.OLED_H)
+    assert img.mode == "L"
+    base = render.message_frame(["hi"])
+    out = render.remaining_overlay(base.copy(), "1h 2m 3s left")
+    assert out.size == base.size
 
 
 @pytest.mark.parametrize("key", ["night", "focus", "dim", "mono"])

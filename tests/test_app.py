@@ -47,7 +47,7 @@ def fire(app, name, kind="tap"):
 
 def boot(app_factory):
     a = app_factory()
-    a.push(a._initial_screen())
+    a._boot_stack()
     return a
 
 
@@ -67,7 +67,9 @@ def test_boot_paused_when_in_book(app):
     a.state.last_book = path
     a.state.touch_book(path, position=3, total_words=10)
     a.state.save()
-    a.push(a._initial_screen())
+    a._boot_stack()
+    assert len(a.stack) == 2
+    assert isinstance(a.stack[0], screens.LibraryScreen)
     assert isinstance(a.stack[-1], screens.PausedScreen)
     assert a.book is not None
     assert a.idx == 3
@@ -78,8 +80,53 @@ def test_boot_library_if_last_book_missing(app):
     a.state.in_book = True
     a.state.last_book = os.path.join(config.BOOKS_DIR, "gone.txt")
     a.state.save()
-    a.push(a._initial_screen())
+    a._boot_stack()
     assert isinstance(a.stack[-1], screens.LibraryScreen)
+    assert len(a.stack) == 1
+
+
+def test_resume_k1_returns_to_library(app):
+    """Power-cut resume must leave Library under Paused so K1 does not crash."""
+    path = _write_book("resume_leave.txt")
+    a = app()
+    a.state.in_book = True
+    a.state.last_book = path
+    a.state.touch_book(path, position=2, total_words=10)
+    a.state.save()
+    a._boot_stack()
+    fire(a, "k1")
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+    assert len(a.stack) == 1
+    assert a.book is None
+    assert a.state.in_book is False
+    assert a.state.book(path)["position"] == 2
+
+
+def test_leave_to_library_replaces_book_only_stack(app):
+    """Safety net: pop_to_root must not redraw Paused after book is cleared."""
+    path = _write_book("orphan.txt")
+    a = app()
+    a.book = books.Book.load(path)
+    a.idx = 1
+    a.state.in_book = True
+    a.state.last_book = path
+    a.stack = [screens.PausedScreen()]
+    a.leave_to_library()
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+    assert len(a.stack) == 1
+    assert a.book is None
+
+
+def test_end_screen_clears_book_only_stack(app):
+    path = _write_book("end_orphan.txt")
+    a = app()
+    a.book = books.Book.load(path)
+    a.idx = len(a.book.words) - 1
+    a.stack = [screens.ReadingScreen(), screens.EndScreen()]
+    fire(a, "press")
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+    assert len(a.stack) == 1
+    assert a.book is None
 
 
 # ---- library ------------------------------------------------------------
@@ -175,9 +222,22 @@ def test_wpm_change_sets_flash(app):
     base = a.state.settings["wpm"]
     fire(a, "up")
     assert a.state.settings["wpm"] == base + config.WPM_STEP
-    assert a._flash_text == "%d wpm" % a.state.settings["wpm"]
+    assert a._flash_text.endswith(" left")
+    assert "s" in a._flash_text
+    assert a._flash_until > time.monotonic()
+    img = a.stack[-1].frame(a)
+    assert img.size == (config.OLED_W, config.OLED_H)
     fire(a, "down")
     assert a.state.settings["wpm"] == base
+
+
+def test_wpm_flash_on_reading_still_shows_wpm(app):
+    a = _open_paused(app)
+    fire(a, "press")
+    assert isinstance(a.stack[-1], screens.ReadingScreen)
+    base = a.state.settings["wpm"]
+    fire(a, "up")
+    assert a._flash_text == "%d wpm" % (base + config.WPM_STEP)
 
 
 def test_sentence_and_chapter_jumps(app):
@@ -739,6 +799,16 @@ def test_system_screen_info_and_power(app, tmp_path, monkeypatch):
         fire(a, "k1")
         assert isinstance(a.stack[-1], screens.SystemScreen)
 
+    # screen test: full black/white toggle
+    sys_screen.sel = sys_screen.items(a).index("Screen test")
+    fire(a, "press")
+    assert isinstance(a.stack[-1], screens.ScreenTestScreen)
+    assert a.stack[-1]._ink is True
+    fire(a, "press")
+    assert a.stack[-1]._ink is False
+    fire(a, "k1")
+    assert isinstance(a.stack[-1], screens.SystemScreen)
+
     # reboot / power off via confirm; monkeypatch subprocess
     calls = []
     monkeypatch.setattr(
@@ -764,6 +834,290 @@ def test_system_screen_info_and_power(app, tmp_path, monkeypatch):
     fire(a, "press")
     fire(a, "k3")  # confirm poweroff
     assert calls and calls[-1][-1] == "poweroff"
+
+
+class _FakeProc:
+    """Stand-in for the Popen handle OtaScreen._spawn keeps: poll()
+    returns whatever the test has set on `.rc` (None = still running),
+    and terminate()/kill()/wait() just record that they were called."""
+
+    def __init__(self):
+        self.rc = None
+        self.terminated = False
+        self.killed = False
+        self.waited = False
+
+    def poll(self):
+        return self.rc
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self):
+        self.waited = True
+
+
+def _fake_popen(calls, proc):
+    """A subprocess.Popen replacement that records argv and always
+    returns the given fake process instead of spawning anything."""
+    def _popen(argv, **kwargs):
+        calls.append(list(argv))
+        return proc
+    return _popen
+
+
+def _arm_ota(tmp_path, monkeypatch):
+    """Common setup: point every OTA_* path at a temp tree and arm
+    `pending`. Returns the paths as a dict for assertions."""
+    ota = tmp_path / "ota"
+    incoming = ota / "incoming"
+    incoming.mkdir(parents=True)
+    pending = ota / "pending"
+    pending.write_text("now\n")
+    failed = ota / "failed"
+    progress = ota / "progress"
+    monkeypatch.setattr(config, "OTA_DIR", str(ota))
+    monkeypatch.setattr(config, "OTA_INCOMING", str(incoming))
+    monkeypatch.setattr(config, "OTA_PENDING", str(pending))
+    monkeypatch.setattr(config, "OTA_FAILED", str(failed))
+    monkeypatch.setattr(config, "OTA_PROGRESS", str(progress))
+    monkeypatch.setattr(config, "OTA_APPLY", "/usr/local/sbin/rapid-reader-ota-apply")
+    return {"ota": ota, "incoming": incoming, "pending": pending,
+            "failed": failed, "progress": progress}
+
+
+def test_ota_pending_wakes_and_applies(app, tmp_path, monkeypatch):
+    paths = _arm_ota(tmp_path, monkeypatch)
+
+    a = _open_paused(app)
+    a._idle_state = "off"
+    a.display.panel.sleeping = True
+    calls = []
+    proc = _FakeProc()
+    monkeypatch.setattr("subprocess.Popen", _fake_popen(calls, proc))
+
+    assert a._check_ota() is True
+    assert isinstance(a.stack[-1], screens.OtaScreen)
+    assert a._idle_state == "active"
+    assert a.display.panel.sleeping is False
+    assert paths["pending"].exists()  # not cleared until the first tick spawns
+
+    ota_screen = a.stack[-1]
+    ota_screen.tick(a)  # spawns the helper
+    assert calls and calls[-1][-1] == config.OTA_APPLY
+    assert not paths["pending"].exists()  # cleared before invoking the helper
+    assert ota_screen._concluded is False
+
+    ota_screen.tick(a)  # still running (proc.rc is None): no-op poll
+    assert ota_screen._concluded is False
+
+    proc.rc = 0
+    ota_screen.tick(a)
+    # rc=0: concluded, but not a failure — the service is expected to
+    # SIGTERM this process before it gets much further than this.
+    assert ota_screen._concluded is True
+    assert ota_screen._failed is False
+    assert ota_screen._label == "Restarting..."
+    assert not paths["pending"].exists()
+    assert not paths["failed"].exists()
+
+
+def test_ota_ignored_when_already_on_ota_screen(app, tmp_path, monkeypatch):
+    pending = tmp_path / "pending"
+    pending.write_text("x")
+    monkeypatch.setattr(config, "OTA_PENDING", str(pending))
+    a = boot(app)
+    a.push(screens.OtaScreen())
+    assert a._check_ota() is False
+
+
+def test_ota_progress_file_drives_fraction_and_label(app, tmp_path, monkeypatch):
+    paths = _arm_ota(tmp_path, monkeypatch)
+    a = _open_paused(app)
+    calls = []
+    proc = _FakeProc()
+    monkeypatch.setattr("subprocess.Popen", _fake_popen(calls, proc))
+
+    assert a._check_ota() is True
+    ota_screen = a.stack[-1]
+    ota_screen.tick(a)  # spawn; no progress file yet -> indeterminate
+    assert ota_screen._fraction == 0.0
+    assert ota_screen._label == "Updating..."
+
+    paths["progress"].write_text("2/4 copying\n")
+    ota_screen.tick(a)
+    assert ota_screen._fraction == 0.5
+    assert ota_screen._label == "Copying..."
+
+    paths["progress"].write_text("3/4 committing\n")
+    ota_screen.tick(a)
+    assert ota_screen._fraction == 0.75
+    assert ota_screen._label == "Installing..."
+
+    # A torn read (helper mid-rewrite) or unknown stage falls back to
+    # the indeterminate label rather than a bogus fraction.
+    paths["progress"].write_text("garbage")
+    ota_screen.tick(a)
+    assert ota_screen._fraction == 0.0
+    assert ota_screen._label == "Updating..."
+
+
+def test_ota_failure_clears_pending_and_marks_failed(app, tmp_path, monkeypatch):
+    paths = _arm_ota(tmp_path, monkeypatch)
+
+    a = _open_paused(app)
+    calls = []
+    proc = _FakeProc()
+    monkeypatch.setattr("subprocess.Popen", _fake_popen(calls, proc))
+
+    assert a._check_ota() is True
+    ota_screen = a.stack[-1]
+    ota_screen.tick(a)  # spawn
+    proc.rc = 1  # non-zero: failed
+    ota_screen.tick(a)
+
+    assert ota_screen._concluded is True
+    assert ota_screen._failed is True
+    assert "exit 1" in ota_screen._label
+    assert not paths["pending"].exists()  # F1: never left armed on failure
+    assert paths["failed"].exists()
+
+    # A fresh App instance (i.e. after a reboot) must not re-enter the OTA
+    # screen just because `failed` (or a stray `pending`) is on disk.
+    b = _open_paused(app)
+    monkeypatch.setattr(config, "OTA_DIR", str(paths["ota"]))
+    monkeypatch.setattr(config, "OTA_INCOMING", str(paths["incoming"]))
+    monkeypatch.setattr(config, "OTA_PENDING", str(paths["pending"]))
+    monkeypatch.setattr(config, "OTA_FAILED", str(paths["failed"]))
+    paths["pending"].write_text("now\n")  # e.g. a stray re-arm
+    assert b._check_ota() is False
+    assert not isinstance(b.stack[-1], screens.OtaScreen)
+
+
+def test_ota_spawn_error_is_a_failure(app, tmp_path, monkeypatch):
+    _arm_ota(tmp_path, monkeypatch)
+    a = _open_paused(app)
+
+    def _raise(argv, **kwargs):
+        raise OSError("no such file or directory")
+    monkeypatch.setattr("subprocess.Popen", _raise)
+
+    assert a._check_ota() is True
+    ota_screen = a.stack[-1]
+    ota_screen.tick(a)
+    assert ota_screen._failed is True
+    assert "spawn error" in ota_screen._label
+
+
+def test_ota_timeout_terminates_then_kills(app, tmp_path, monkeypatch):
+    _arm_ota(tmp_path, monkeypatch)
+    a = _open_paused(app)
+    calls = []
+    proc = _FakeProc()
+    monkeypatch.setattr("subprocess.Popen", _fake_popen(calls, proc))
+
+    assert a._check_ota() is True
+    ota_screen = a.stack[-1]
+    ota_screen.tick(a)  # spawn
+    ota_screen._spawned_at = time.monotonic() - config.OTA_TIMEOUT_SECS - 1
+
+    ota_screen.tick(a)  # past the timeout: first response is SIGTERM
+    assert proc.terminated is True
+    assert proc.killed is False
+    assert ota_screen._concluded is False
+
+    ota_screen.tick(a)  # helper still hasn't exited, grace not up yet
+    assert proc.killed is False
+    assert ota_screen._concluded is False
+
+    ota_screen._killed_at = time.monotonic() - ota_screen._KILL_GRACE_SECS - 1
+    ota_screen.tick(a)  # grace expired: escalate to SIGKILL
+    assert proc.killed is True
+    assert proc.waited is True
+    assert ota_screen._concluded is True
+    assert ota_screen._failed is True
+    assert "timeout" in ota_screen._label
+
+
+def test_ota_timeout_short_circuits_if_helper_exits_during_grace(app, tmp_path, monkeypatch):
+    _arm_ota(tmp_path, monkeypatch)
+    a = _open_paused(app)
+    calls = []
+    proc = _FakeProc()
+    monkeypatch.setattr("subprocess.Popen", _fake_popen(calls, proc))
+
+    assert a._check_ota() is True
+    ota_screen = a.stack[-1]
+    ota_screen.tick(a)
+    ota_screen._spawned_at = time.monotonic() - config.OTA_TIMEOUT_SECS - 1
+    ota_screen.tick(a)  # SIGTERM sent
+    assert proc.terminated is True
+
+    proc.rc = 1  # helper exited on its own after the SIGTERM
+    ota_screen.tick(a)
+    assert proc.killed is False  # never needed the harder signal
+    assert ota_screen._failed is True
+    assert "timeout" in ota_screen._label
+
+
+def test_ota_failed_screen_dismisses_to_library(app, tmp_path, monkeypatch):
+    _arm_ota(tmp_path, monkeypatch)
+    a = _open_paused(app)
+    calls = []
+    proc = _FakeProc()
+    monkeypatch.setattr("subprocess.Popen", _fake_popen(calls, proc))
+    a._check_ota()
+    ota_screen = a.stack[-1]
+    ota_screen.tick(a)
+    proc.rc = 1
+    ota_screen.tick(a)
+    assert ota_screen._failed is True
+
+    fire(a, "k1")  # in-progress swallows this; failed dismisses
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+    assert len(a.stack) == 1
+
+
+def test_ota_in_progress_swallows_input(app, tmp_path, monkeypatch):
+    _arm_ota(tmp_path, monkeypatch)
+    a = _open_paused(app)
+    a._check_ota()
+    ota_screen = a.stack[-1]
+    assert ota_screen._failed is False
+
+    fire(a, "k1")  # must not dismiss while still in progress
+    assert a.stack[-1] is ota_screen
+
+
+def test_ota_blocking_only_while_not_failed(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "IDLE_DIM_SECS", 0.01)
+    monkeypatch.setattr(config, "IDLE_OFF_SECS", 0.02)
+    a = boot(app)
+    a.push(screens.OtaScreen())
+    ota_screen = a.stack[-1]
+
+    assert a._ota_blocking() is True  # run() bypasses idle here
+
+    ota_screen._concluded = True
+    ota_screen._failed = True
+    assert a._ota_blocking() is False  # run() rejoins ordinary handling
+
+    # Once unblocked, idle dim/off applies exactly like any other screen.
+    a._last_input_at = time.monotonic() - 10
+    a._tick_idle()
+    assert a._idle_state == "off"
+
+
+def test_ota_progress_parse_rejects_garbage():
+    assert screens._parse_ota_progress("2/4 copying") == (0.5, "Copying...")
+    assert screens._parse_ota_progress("4/4 restarting") == (1.0, "Restarting...")
+    assert screens._parse_ota_progress("") is None
+    assert screens._parse_ota_progress("not a progress line") is None
+    assert screens._parse_ota_progress("1/4 some-unknown-stage") is None
+    assert screens._parse_ota_progress("1/0 verifying") is None
 
 
 # ---- Phase 2D: library K1 hold / K2, control-map seams ----------------

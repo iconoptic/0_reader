@@ -85,13 +85,18 @@ class App:
 
     def pop_to_root(self):
         # Exit every screen above the root without redrawing intermediates
-        # (leave_to_library clears self.book before this runs).
+        # (leave_to_library clears self.book before this runs). Always land
+        # on LibraryScreen — a book-only stack (e.g. old resume shape) must
+        # not redraw Paused/Reading/End with book already None.
         while len(self.stack) > 1:
             old = self.stack.pop()
             old.on_exit(self)
-        if self.stack:
-            self.stack[-1].on_enter(self)
-            self.redraw()
+        if not self.stack or not isinstance(self.stack[0], screens.LibraryScreen):
+            if self.stack:
+                self.stack[0].on_exit(self)
+            self.stack[:] = [screens.LibraryScreen()]
+        self.stack[-1].on_enter(self)
+        self.redraw()
 
     def pop_to(self, screen_cls):
         """Pop until the top of the stack is an instance of screen_cls
@@ -185,8 +190,53 @@ class App:
         self.state.settings["wpm"] = max(
             config.MIN_WPM, min(config.MAX_WPM, self.state.settings["wpm"] + delta))
         self.state.save()
-        self._flash_text = "%d wpm" % self.state.settings["wpm"]
-        self._flash_until = time.monotonic() + 1.0
+        wpm = self.state.settings["wpm"]
+        if (self.book and self.stack
+                and isinstance(self.stack[-1], screens.PausedScreen)):
+            words_left = max(0, len(self.book.words) - self.idx)
+            secs = (words_left / max(1, wpm)) * 60.0
+            self._flash_text = "%s left" % render.fmt_duration_hms(secs)
+            self._flash_until = time.monotonic() + 2.0
+        else:
+            self._flash_text = "%d wpm" % wpm
+            self._flash_until = time.monotonic() + 1.0
+
+    def _check_ota(self):
+        """If an OTA is pending, wake, save, and push the update screen."""
+        if not self.stack:
+            return False
+        if isinstance(self.stack[-1], screens.OtaScreen):
+            return False
+        if os.path.exists(config.OTA_FAILED):
+            # A previous attempt already failed; never auto-retry, even
+            # if `pending` is somehow still present (belt-and-braces —
+            # see docs/plan_1/phase-0-ota-contracts.md §1).
+            return False
+        if not os.path.exists(config.OTA_PENDING):
+            return False
+        if self.book:
+            self.save_position()
+        else:
+            self.state.save()
+        self._last_input_at = time.monotonic()
+        self._idle_state = "active"
+        try:
+            self.display.wake()
+            self.display.contrast(self.theme.contrast)
+        except Exception:
+            pass
+        self.push(screens.OtaScreen())
+        return True
+
+    def _ota_blocking(self):
+        """True while an OTA update is in progress and must not be
+        interrupted: the run loop swallows input and bypasses idle
+        dim/off until the attempt concludes or fails. Once failed, this
+        is False and OtaScreen is handled like any other screen — input
+        dispatch dismisses it, and idle dim/off applies again (see
+        docs/plan_1/phase-0-ota-contracts.md §2)."""
+        top = self.stack[-1] if self.stack else None
+        return isinstance(top, screens.OtaScreen) and not top._failed
 
     def save_position(self):
         if self.book:
@@ -259,20 +309,31 @@ class App:
             time.sleep(remaining)
 
     # ---- main loop ----
-    def _initial_screen(self):
+    def _boot_stack(self):
+        """Always start with Library as root; push Paused when resuming."""
+        self.push(screens.LibraryScreen())
         library = books.scan_library()
         if (self.state.in_book and self.state.last_book
                 and any(p == self.state.last_book for _, p in library)):
             self.book = books.Book.load(self.state.last_book)
             rec = self.state.book(self.state.last_book)
             self.idx = min(rec["position"], max(0, len(self.book.words) - 1))
-            return screens.PausedScreen()
-        return screens.LibraryScreen()
+            self.push(screens.PausedScreen())
 
     def run(self):
-        self.push(self._initial_screen())
+        self._boot_stack()
         while True:
-            reading = isinstance(self.stack[-1], screens.ReadingScreen)
+            if self._check_ota():
+                continue
+            top = self.stack[-1]
+            if self._ota_blocking():
+                # In progress: swallow input, bypass idle, poll fast.
+                # Once failed, fall through to ordinary handling below so
+                # the screen can be dismissed and idle dim/off resumes.
+                top.tick(self)
+                time.sleep(0.15)
+                continue
+            reading = isinstance(top, screens.ReadingScreen)
             if reading:
                 try:
                     ev = self.events.get_nowait()

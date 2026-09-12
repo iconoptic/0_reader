@@ -85,6 +85,23 @@ def fmt_minutes(minutes):
     return "%dh" % h if h >= 10 else "%dh %02dm" % (h, m)
 
 
+def fmt_duration_hms(seconds):
+    """Compact remaining-time string: omit leading zero units, always show seconds."""
+    seconds = max(0, int(round(seconds)))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append("%dd" % days)
+    if days or hours:
+        parts.append("%dh" % hours)
+    if days or hours or minutes:
+        parts.append("%dm" % minutes)
+    parts.append("%ds" % secs)
+    return " ".join(parts)
+
+
 def fmt_words(n):
     if n >= 10_000:
         return "%.0fk" % (n / 1000)
@@ -165,6 +182,39 @@ def _flash_badge(d, text):
     d.rectangle([x0, y0, x1, y1], fill=INK)
     tw = d.textlength(text, font=fnt)
     d.text((x0 + (x1 - x0 - tw) / 2, y0 + 1), text, font=fnt, fill=BG)
+
+
+def remaining_overlay(img, text):
+    """Centered inverted band for remaining-time flash on the pause screen."""
+    d = ImageDraw.Draw(img)
+    t = _default_theme()
+    fnt = themes.font(t, 10, bold=True)
+    text = _ellipsize(d, text, fnt, W - 10)
+    tw = d.textlength(text, font=fnt)
+    pad_x, bh = 5, 14
+    bw = int(tw) + pad_x * 2
+    x0 = max(0, (W - bw) // 2)
+    y0 = (H - bh) // 2
+    d.rectangle([x0, y0, x0 + bw - 1, y0 + bh - 1], fill=INK)
+    d.text((x0 + pad_x, y0 + 2), text, font=fnt, fill=BG)
+    return img
+
+
+def progress_frame(fraction, label="Updating..."):
+    """Full-screen OTA / progress UI with a horizontal bar."""
+    img, d = _canvas()
+    t = _default_theme()
+    f = themes.font(t, 11, bold=True)
+    _center(d, _ellipsize(d, label, f, W - 8), f, 16)
+    x0, y0, x1, y1 = 8, 34, W - 9, 46
+    d.rectangle([x0, y0, x1, y1], outline=INK)
+    frac = max(0.0, min(1.0, float(fraction)))
+    inner = x1 - x0 - 3
+    fill_w = int(inner * frac)
+    if fill_w > 0:
+        d.rectangle([x0 + 2, y0 + 2, x0 + 2 + fill_w, y1 - 2], fill=INK)
+    _center(d, "%d%%" % round(frac * 100), themes.font(t, 9), 50)
+    return _finalize(img)
 
 
 # ---- RSVP word frame -------------------------------------------------
@@ -322,7 +372,8 @@ def list_frame(header, rows, sel, top, rows_visible=4, footer=None, note=None,
     return _finalize(img)
 
 
-def paused_frame(title, words, idx, sentence_start, wpm, progress, theme):
+def paused_frame(title, words, idx, sentence_start, wpm, progress, theme,
+                 flash=None):
     """Paused context: current sentence with current word bold+underlined."""
     img, d = _canvas()
     right = "%d%%  %d wpm" % (round(progress * 100), wpm)
@@ -337,7 +388,11 @@ def paused_frame(title, words, idx, sentence_start, wpm, progress, theme):
             break
     sentence = words[sentence_start:end]
     if not sentence:
-        return _finalize(img)
+        img = _finalize(img)
+        if flash:
+            remaining_overlay(img, flash)
+            img = _finalize(img)
+        return img
 
     reg = themes.font(theme, 10)
     bold = themes.font(theme, 10, bold=True)
@@ -378,7 +433,11 @@ def paused_frame(title, words, idx, sentence_start, wpm, progress, theme):
                 d.line([(x, y + 10), (x + wlen, y + 10)], fill=INK)
             x += d.textlength(tok + " ", font=fnt)
         y += line_h
-    return _finalize(img)
+    img = _finalize(img)
+    if flash:
+        remaining_overlay(img, flash)
+        img = _finalize(img)
+    return img
 
 
 def info_frame(title, ext, position, total_words, wpm, time_read_secs):
