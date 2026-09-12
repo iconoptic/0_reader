@@ -288,6 +288,23 @@ sudo tools/salvage_card.sh /dev/sdX /root/rr-salvage
 sudo tools/build_card.sh /dev/sdX /root/rr-salvage
 ```
 
+`build_card.sh` restores the old card's data *only* when it is given a
+salvage directory; run alone it produces a blank card. To do both halves
+safely in one step use the wrapper, which refuses to erase anything until
+it has confirmed the backup actually contains the saved reading state, and
+re-reads the finished card to prove the state came back:
+
+```sh
+sudo tools/refresh_card.sh /dev/sdX               # back up + rebuild in place
+sudo tools/refresh_card.sh --swap /dev/sdX        # back up, then rebuild onto a new card
+sudo tools/refresh_card.sh --backup-only /dev/sdX # back up and stop
+sudo tools/refresh_card.sh --restore DIR /dev/sdX # rebuild from an earlier backup
+```
+
+Backups are timestamped directories under `/var/backups/rapid-reader`
+(`latest` points at the newest). They contain the `reader` password hash
+and wifi PSKs, so they stay root-only.
+
 `build_card.sh` needs `sdcard_build/raspios_lite_armhf_latest.img.xz`
 (Raspberry Pi OS Lite 32-bit, Trixie) and `qemu-arm-static` with
 binfmt_misc. It flashes the image, grows the root partition to fill the
