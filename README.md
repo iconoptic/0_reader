@@ -51,14 +51,14 @@ See [CONTROLS.md](CONTROLS.md) for the full key reference.
 
 | Input | BCM pin |
 |-------|---------|
-| Joystick UP | 6 |
+| Joystick UP | 13 |
 | Joystick DOWN | 19 |
 | Joystick LEFT | 5 |
 | Joystick RIGHT | 26 |
-| Joystick PRESS | 13 |
-| K1 | 21 |
+| Joystick PRESS | 6 |
+| K1 | 16 |
 | K2 | 20 |
-| K3 | 16 |
+| K3 | 21 |
 
 All eight inputs are active-low with pull-ups (`config.PINS`). The build
 script enables `dtparam=spi=on` and sets early GPIO pull-ups; there is no
@@ -120,15 +120,17 @@ flowchart LR
 ## Controls (summary)
 
 Eight inputs: 5-way joystick + K1 / K2 / K3. Gestures are **tap**,
-**hold**, and **repeat** (see [CONTROLS.md](CONTROLS.md)). K3 is the
-context-action key on list screens.
+**hold**, and **repeat** (see [CONTROLS.md](CONTROLS.md)). Stable roles:
+**K1** = back/leave, **K2** = menu, **K3** = act (pause, confirm-yes,
+list context).
 
 | Mode | Highlights |
 |------|------------|
 | Library | up/down select, left/right page, press open; K1 hold power-off; K2 main menu; K3 book info |
 | Reading | press/K3 pause; up/down wpm; left/right sentence; K1 → library; K2 book menu |
 | Paused | same as Reading, plus left/right hold = chapter jump |
-| Lists | press select; K1 back; K3 context action when available |
+| Lists | press select; K1 back; K2 menu; K3 context action when available |
+| Confirm | K3 yes; K1 no |
 | Idle | dim then sleep; any key wakes (swallowed) |
 
 ## Adding books
@@ -140,6 +142,18 @@ scp "My Book.epub" reader@rapidreader.local:ebooks/
 ```
 
 Then rescan from the library (or just reboot).
+
+### Internet Archive PDFs
+
+Put digitized PDFs in `to_convert/` (gitignored), then convert with
+`pdftotext` (poppler) and a small cleanup script:
+
+```sh
+python3 tools/pdf_to_txt.py                  # to_convert/*.pdf → ebooks/
+python3 tools/pdf_to_txt.py book.pdf --out ebooks/
+```
+
+Copy the resulting `.txt` to the device as above.
 
 ## Development & tests
 
@@ -215,8 +229,9 @@ splash and then the library.
   Python and Pillow are loaded. Power-off is via `K1 hold` from the
   library (confirm on the next screen); wait for the panel to go dark
   before unplugging.
-- **Orientation.** If the image is upside down set `ROTATE_180 = True`
-  in `/opt/rapid-reader/config.py` (also swaps joystick directions to
+- **Orientation.** Default is `ROTATE_180 = True` (thumbpad on the left).
+  If the image is upside down for your mounting, flip the flag in
+  `/opt/rapid-reader/config.py` (also swaps joystick directions to
   match), then `sudo systemctl restart rapid-reader`.
 - **Contrast.** `IDLE_ACTIVE_CONTRAST` / `IDLE_DIM_CONTRAST` in
   `config.py` (SH1106 contrast register; no backlight PWM).

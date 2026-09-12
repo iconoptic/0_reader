@@ -29,6 +29,9 @@ Phase 1D owns the migration code; this module only documents the schema.
 
 Control map (Phase 1B / Phase 2)::
 
+    Stable roles: K1 = Back/leave (hold on Library = power), K2 = Menu
+    everywhere, K3 = Act (pause/resume, confirm-yes, list context).
+
     Library (list of ListScreen):
       up/down     — move selection (repeats)
       left/right  — page by one screenful (repeats)
@@ -51,9 +54,15 @@ Control map (Phase 1B / Phase 2)::
     Every list screen (chapters, bookmarks, settings, themes, system,
     book menu):
       K1    — back one level
+      K2    — open menu (no-op when already on the menu)
       press — select/activate highlighted row
-      K3    — context action where one exists (delete bookmark, delete
-              book); otherwise no-op
+      K3    — context action where one exists (e.g. delete bookmark);
+              otherwise no-op
+
+    Confirm dialogs:
+      K3 tap — yes
+      K1 tap — no
+      other keys ignored
 
     Idle (any screen except Reading):
       no input for IDLE_DIM_SECS  → contrast drops to IDLE_DIM_CONTRAST

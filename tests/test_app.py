@@ -556,6 +556,23 @@ def test_confirm_screen_yes_no(app):
     assert isinstance(a.stack[-1], screens.LibraryScreen)
 
 
+def test_confirm_screen_ignores_non_k1_cancel(app):
+    a = boot(app)
+    called = []
+
+    def on_yes(app_):
+        called.append(True)
+
+    a.push(screens.ConfirmScreen("Sure?", on_yes))
+    for name in ("k2", "press", "up", "down", "left", "right"):
+        fire(a, name)
+        assert isinstance(a.stack[-1], screens.ConfirmScreen)
+        assert called == []
+    fire(a, "k1")
+    assert called == []
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+
+
 # ---- settings / themes / display / system -------------------------------
 
 def test_settings_cycles_word_size_and_pivot_style(app):
@@ -690,8 +707,8 @@ def test_display_settings_contrast_session_only(app):
     fire(a, "up")  # nudge away from theme
     nudged = disp._value
     assert nudged != base
-    fire(a, "k1")  # revert and pop
-    assert a.display.panel.contrast_level == base
+    fire(a, "k1")  # back; keep session contrast
+    assert a.display.panel.contrast_level == nudged
     assert isinstance(a.stack[-1], screens.SettingsScreen)
     a.state.save()
     assert "contrast" not in a.state.settings
@@ -717,7 +734,9 @@ def test_system_screen_info_and_power(app, tmp_path, monkeypatch):
         fire(a, "press")
         assert isinstance(a.stack[-1], screens.MessageScreen)
         assert a.stack[-1].lines and a.stack[-1].lines[0]
-        fire(a, "press")  # any key pops MessageScreen
+        fire(a, "press")  # ignored; only K1 pops
+        assert isinstance(a.stack[-1], screens.MessageScreen)
+        fire(a, "k1")
         assert isinstance(a.stack[-1], screens.SystemScreen)
 
     # reboot / power off via confirm; monkeypatch subprocess
@@ -886,6 +905,39 @@ def test_list_screen_k1_press_k3_matrix(app):
     assert isinstance(a.stack[-1], screens.SettingsScreen)
 
 
+def test_nested_list_k2_opens_menu(app):
+    a = _open_paused(app)
+    fire(a, "k2")
+    menu = a.stack[-1]
+    menu.sel = menu.items(a).index("Settings")
+    fire(a, "press")
+    assert isinstance(a.stack[-1], screens.SettingsScreen)
+    depth = len(a.stack)
+    fire(a, "k2")
+    assert isinstance(a.stack[-1], screens.BookMenuScreen)
+    assert len(a.stack) == depth + 1
+
+
+def test_book_menu_k2_is_noop(app):
+    a = _open_paused(app)
+    fire(a, "k2")
+    assert isinstance(a.stack[-1], screens.BookMenuScreen)
+    depth = len(a.stack)
+    fire(a, "k2")
+    assert isinstance(a.stack[-1], screens.BookMenuScreen)
+    assert len(a.stack) == depth
+
+
+def test_message_screen_only_k1_exits(app):
+    a = boot(app)
+    a.push(screens.MessageScreen(["hello"]))
+    for name in ("press", "k2", "k3", "up"):
+        fire(a, name)
+        assert isinstance(a.stack[-1], screens.MessageScreen)
+    fire(a, "k1")
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+
+
 # ---- Phase 2D: stack-depth invariants -----------------------------------
 
 def test_stack_depth_chapters_round_trip(app):
@@ -943,6 +995,9 @@ def test_stack_depth_end_any_key_to_library(app):
     fire(a, "press")  # any key
     assert isinstance(a.stack[-1], screens.LibraryScreen)
     assert len(a.stack) == 1
+    assert a.book is None
+    fire(a, "k2")
+    assert a.stack[-1].items(a) == list(screens.BookMenuScreen._NO_BOOK_ITEMS)
 
 
 # ---- Phase 2D: state.save() timing audit --------------------------------

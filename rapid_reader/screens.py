@@ -11,10 +11,11 @@ from contracts import Screen
 
 class ListScreen(Screen):
     """Shared plumbing for every list-shaped screen: an items() list, a
-    selection index, K1=back (pop), press=activate(app, item), K3=context
-    action if implemented, up/down move selection (with wraparound),
-    left/right page by rows_visible. Subclasses override items(),
-    header(), row_text(), activate(), and optionally context_action()."""
+    selection index, K1=back (pop), K2=menu, press=activate(app, item),
+    K3=context action if implemented, up/down move selection (with
+    wraparound), left/right page by rows_visible. Subclasses override
+    items(), header(), row_text(), activate(), and optionally
+    context_action()."""
 
     rows_visible = 4
 
@@ -68,6 +69,8 @@ class ListScreen(Screen):
             self.activate(app, items[self.sel])
         elif name == "k3" and kind == "tap" and items:
             self.context_action(app, items[self.sel])
+        elif name == "k2" and kind == "tap":
+            app.push(BookMenuScreen())
         elif name == "k1" and kind == "tap":
             app.pop()
 
@@ -109,9 +112,6 @@ class LibraryScreen(ListScreen):
         name, kind = event
         if name == "k1" and kind == "hold":
             app.push(ConfirmScreen("Power off?", self._power_off))
-            return
-        if name == "k2" and kind == "tap":
-            app.push(BookMenuScreen())
             return
         super().handle(app, event)
 
@@ -194,7 +194,8 @@ class PausedScreen(Screen):
 
 class BookMenuScreen(ListScreen):
     """K2 from Library (no book: Settings/System only) or from
-    Reading/Paused (full menu)."""
+    Reading/Paused/lists (full menu when a book is open). K2 is a no-op
+    here so we do not stack duplicate menus."""
 
     _BOOK_ITEMS = ("Bookmark this page", "Chapters", "Bookmarks", "Book info",
                    "Settings", "System", "Save & close book")
@@ -205,6 +206,12 @@ class BookMenuScreen(ListScreen):
 
     def header(self, app):
         return "MENU"
+
+    def handle(self, app, event):
+        name, kind = event
+        if name == "k2" and kind == "tap":
+            return
+        super().handle(app, event)
 
     def activate(self, app, item):
         if item == "Bookmark this page":
@@ -230,14 +237,17 @@ class EndScreen(Screen):
         return render.end_frame(app.book.title)
 
     def handle(self, app, event):
+        # Match leave_to_library(): clear the in-memory book so Library K2
+        # shows the reduced Settings/System menu (position already saved).
+        app.book = None
         app.pop_to_root()
 
 
 class MessageScreen(Screen):
-    """Centred text, any key pops. Reused by System/Settings for
-    read-only info and by errors."""
+    """Centred text; K1 pops (stable Back role). Reused by System/Settings
+    for read-only info and by errors."""
 
-    def __init__(self, lines, hint="any key: back"):
+    def __init__(self, lines, hint="k1: back"):
         self.lines = lines
         self.hint = hint
 
@@ -245,13 +255,14 @@ class MessageScreen(Screen):
         return render.message_frame(self.lines, hint=self.hint)
 
     def handle(self, app, event):
-        app.pop()
+        name, kind = event
+        if name == "k1" and kind == "tap":
+            app.pop()
 
 
 class ConfirmScreen(Screen):
-    """Generic yes/no dialog. `on_yes(app)` is called and this screen is
-    popped either way. K3 = yes (matches BookmarksScreen/SystemScreen's
-    K3-context-action convention), any other key = no."""
+    """Generic yes/no dialog. `on_yes(app)` runs after this screen is
+    popped on yes. K3 = yes; K1 = no; other keys ignored."""
 
     def __init__(self, text, on_yes, yes_hint="K3: yes", no_hint="K1: no"):
         self.text = text
@@ -267,7 +278,7 @@ class ConfirmScreen(Screen):
         if name == "k3" and kind == "tap":
             app.pop()
             self.on_yes(app)
-        else:
+        elif name == "k1" and kind == "tap":
             app.pop()
 
 
@@ -430,7 +441,7 @@ class DisplaySettingsScreen(Screen):
             app.display.contrast(self._value)
             app.redraw()
         elif name == "k1" and kind == "tap":
-            app.display.contrast(app.theme.contrast)  # revert, not persisted
+            # Keep session nudge; not persisted across theme change / restart.
             app.pop()
 
 

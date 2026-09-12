@@ -12,8 +12,14 @@ keys **K1** / **K2** / **K3**. BCM pins live in `config.PINS` (see
 | repeat | held past `HOLD_DELAY` on a repeating key (`up`/`down`/`left`/`right`); first event then every `REPEAT_SECS` (0.12 s) until release |
 
 Repeating keys never emit a separate `hold` event — only `repeat`.
-**K3** is the context-action key on list screens (delete bookmark, delete
-book, …); elsewhere it is a no-op unless noted.
+
+Stable key roles:
+
+| Key | Role |
+|-----|------|
+| **K1** | Back / leave. Hold on Library only = power-off confirm. |
+| **K2** | Menu (everywhere). |
+| **K3** | Act: pause/resume, confirm-yes, list context when one exists. |
 
 ## Library
 
@@ -60,9 +66,19 @@ the same skeleton:
 | Input | Action |
 |-------|--------|
 | up / down (repeat) | move selection |
+| left / right (repeat) | page by one screenful |
 | press | select / activate the highlighted row |
 | K1 | back one level |
-| K3 | context action when one exists (e.g. delete bookmark / delete book); otherwise no-op |
+| K2 | open menu (no-op when already on the menu) |
+| K3 | context action when one exists (e.g. delete bookmark); otherwise no-op |
+
+## Confirm dialogs
+
+| Input | Action |
+|-------|--------|
+| K3 tap | yes |
+| K1 tap | no |
+| other keys | ignored |
 
 ## Idle
 

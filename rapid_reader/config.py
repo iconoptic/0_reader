@@ -13,13 +13,14 @@ GPIO_CHIP = 0
 # Single flag flips the panel 180 degrees *and* swaps the joystick's
 # up/down/left/right mapping to match, so the physical "up" on the board
 # is always logical "up" regardless of mounting orientation.
-ROTATE_180 = False
+ROTATE_180 = True
 
 # --- Keys (BCM, active low, pull-ups) -------------------------------
-PIN_KEY1, PIN_KEY2, PIN_KEY3 = 21, 20, 16
-PIN_JOY_UP, PIN_JOY_DOWN = 6, 19
+# K1/K3 and UP/PRESS swapped vs Waveshare docs: this HAT wires them reversed.
+PIN_KEY1, PIN_KEY2, PIN_KEY3 = 16, 20, 21
+PIN_JOY_UP, PIN_JOY_DOWN = 13, 19
 PIN_JOY_LEFT, PIN_JOY_RIGHT = 5, 26
-PIN_JOY_PRESS = 13
+PIN_JOY_PRESS = 6
 
 # name -> BCM pin; single source of truth for buttons.Input. Names are the
 # canonical event names used everywhere else (see event tuple below).

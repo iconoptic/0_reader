@@ -30,14 +30,17 @@ and matches `rapid_reader/config.py`.
 | OLED CS | BCM 8 (SPI0 CE0, kernel-managed) |
 | OLED DC | BCM 24 |
 | OLED RST | BCM 25 |
-| K1 | BCM 21 |
+| K1 | BCM 16 |
 | K2 | BCM 20 |
-| K3 | BCM 16 |
-| Joystick UP | BCM 6 |
+| K3 | BCM 21 |
+| Joystick UP | BCM 13 |
 | Joystick DOWN | BCM 19 |
 | Joystick LEFT | BCM 5 |
 | Joystick RIGHT | BCM 26 |
-| Joystick PRESS | BCM 13 |
+| Joystick PRESS | BCM 6 |
+
+K1/K3 and UP/PRESS differ from the common Waveshare wiki values; this HAT
+wires those pairs swapped. Canonical map: `config.PINS`.
 
 ### Controller notes
 
