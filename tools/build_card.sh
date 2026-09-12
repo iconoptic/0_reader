@@ -178,9 +178,11 @@ install -d -m 700 -o 1000 -g 1000 "$ROOT/home/reader/.ssh"
 if [[ -n $SALVAGE && -f $SALVAGE/home/authorized_keys ]]; then
     install -m 600 -o 1000 -g 1000 "$SALVAGE/home/authorized_keys" "$ROOT/home/reader/.ssh/authorized_keys"
 fi
-# only poweroff/reboot without a password (used by the app's power-off screen)
-printf 'reader ALL=(root) NOPASSWD: /usr/sbin/poweroff, /usr/sbin/reboot\n' > "$ROOT/etc/sudoers.d/010_rapid-reader"
+# poweroff/reboot (System menu) + OTA apply helper (in-app update restart)
+printf 'reader ALL=(root) NOPASSWD: /usr/sbin/poweroff, /usr/sbin/reboot, /usr/local/sbin/rapid-reader-ota-apply\n' > "$ROOT/etc/sudoers.d/010_rapid-reader"
 chmod 440 "$ROOT/etc/sudoers.d/010_rapid-reader"
+install -m 755 "$HERE/system/rapid-reader-ota-apply" "$ROOT/usr/local/sbin/rapid-reader-ota-apply"
+install -d -m 755 -o 1000 -g 1000 "$ROOT/var/lib/rapid-reader/ota/incoming"
 
 # ---------------------------------------------------------------- system
 log "hostname / network / services"

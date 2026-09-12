@@ -46,6 +46,26 @@ STATE_FILE = STATE_DIR + "/state.json"
 SPLASH_DIR = "/opt/rapid-reader/splash"
 HW_RETRY_SECS = 40.0
 
+# --- OTA (host sync stages under STATE_DIR/ota/) ---------------------
+# See docs/plan_1/phase-0-ota-contracts.md for the full state machine.
+OTA_DIR = STATE_DIR + "/ota"
+OTA_INCOMING = OTA_DIR + "/incoming"
+OTA_PENDING = OTA_DIR + "/pending"
+# Written by the app when an apply attempt fails; read by _check_ota so a
+# failed attempt is never auto-retried. Cleared by host sync when it arms
+# the next update, not by the app itself.
+OTA_FAILED = OTA_DIR + "/failed"
+# "<current>/<total> <stage>", rewritten atomically by the helper as it
+# progresses (phase-0-ota-contracts.md §5); OtaScreen polls it instead of
+# animating a synthetic percentage.
+OTA_PROGRESS = OTA_DIR + "/progress"
+OTA_APPLY = "/usr/local/sbin/rapid-reader-ota-apply"
+# Hard cap from helper spawn to a forced kill; see §5 "helper never
+# returns". Generous for a whole-tree copy on a Pi Zero W's local
+# storage, but finite so a wedged helper cannot hold the non-dismissible
+# in-progress screen forever.
+OTA_TIMEOUT_SECS = 120.0
+
 # --- Reading ---------------------------------------------------------
 DEFAULT_WPM = 250
 MIN_WPM = 60

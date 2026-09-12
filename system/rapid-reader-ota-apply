@@ -1,0 +1,178 @@
+#!/bin/bash
+# Apply a staged Rapid Reader OTA update and restart the service.
+# Invoked by the app via: sudo -n /usr/local/sbin/rapid-reader-ota-apply
+# See docs/plan_1/phase-0-ota-contracts.md for the on-disk state machine
+# this helper is one side of, and docs/plan_1/phase-4-atomic-apply.md for
+# why this builds a new tree beside the target instead of rsyncing
+# --delete straight into the live one.
+set -euo pipefail
+
+# Paths are overridable by environment so tests/test_ota_apply.py can
+# exercise this script against a temp tree instead of the live device
+# paths; every default below is the real on-device path.
+OTA_DIR=${OTA_DIR:-/var/lib/rapid-reader/ota}
+INCOMING=${OTA_INCOMING:-$OTA_DIR/incoming}
+PENDING=${OTA_PENDING:-$OTA_DIR/pending}
+FAILED=${OTA_FAILED:-$OTA_DIR/failed}
+PROGRESS=${OTA_PROGRESS:-$OTA_DIR/progress}
+# Sibling of incoming/, written by host sync from the source tree — see
+# phase-0-ota-contracts.md §1. Not itself inside incoming/.
+MANIFEST=${OTA_MANIFEST:-$OTA_DIR/manifest}
+DEST=${OTA_DEST:-/opt/rapid-reader}
+NEW=${OTA_DEST_NEW:-$DEST.new}
+PREV=${OTA_DEST_PREV:-$DEST.prev}
+
+# The card-build smoke test's own import list (tools/build_card.sh's
+# "verifying" step) plus boot.py, the entry point it never imports by
+# name. Presence-only — proving the tree is the app, not that it runs;
+# actually running it is build_card.sh's job, not an OTA apply's.
+REQUIRED_FILES=(boot.py config.py oled.py display.py render.py rsvp.py
+                books.py theme.py main.py)
+
+# --check is the host-side preflight no-op (docs/plan_1/phase-0-ota-
+# contracts.md §4): it proves this helper is installed, runs under the
+# NOPASSWD sudoers rule, and has its paths in place. It must never
+# apply anything. Argument handling comes before any apply work so a
+# stray or misspelled flag can never fall through into an install.
+if [[ ${1:-} == --check ]]; then
+    [[ -d $DEST ]] || { echo "ota-apply: missing $DEST" >&2; exit 1; }
+    [[ -d $OTA_DIR ]] || { echo "ota-apply: missing $OTA_DIR" >&2; exit 1; }
+    if [[ -d $INCOMING && -n $(ls -A "$INCOMING" 2>/dev/null) ]]; then
+        echo "ota-apply: ready (staged tree present)"
+    else
+        echo "ota-apply: ready (not staged)"
+    fi
+    exit 0
+fi
+if [[ $# -gt 0 ]]; then
+    echo "ota-apply: unknown argument: $1" >&2
+    echo "usage: rapid-reader-ota-apply [--check]" >&2
+    exit 2
+fi
+
+STAGE_TOTAL=4
+
+# Rewritten atomically (temp file + mv, same directory as $PROGRESS) so
+# OtaScreen.tick never sees a torn read. See phase-0-ota-contracts.md §5
+# — the app maps this straight to a fraction and label; there is no
+# synthetic animation on either side any more.
+progress() {  # <n> <stage-name>
+    local tmp
+    tmp=$(mktemp "$(dirname "$PROGRESS")/.progress.XXXXXX")
+    printf '%s/%s %s\n' "$1" "$STAGE_TOTAL" "$2" > "$tmp"
+    mv -f "$tmp" "$PROGRESS"
+}
+
+fail() {  # message...
+    echo "ota-apply: $*" >&2
+    exit 1
+}
+
+mkdir -p "$OTA_DIR"
+
+# ---- stage 1/4: verifying --------------------------------------------
+progress 1 verifying
+
+[[ -d $INCOMING ]] || fail "missing $INCOMING"
+[[ -f $MANIFEST ]] || fail "missing $MANIFEST (host sync did not stage one)"
+
+# Catches exactly what an interrupted host->incoming transfer over this
+# Pi Zero W's wifi link leaves behind: missing or truncated files,
+# independent of whether rsync itself reported success (F6). A refusal
+# here touches nothing under $DEST.
+if ! (cd "$INCOMING" && sha256sum -c "$MANIFEST") >/dev/null 2>&1; then
+    fail "staged tree does not match manifest (interrupted or corrupted transfer)"
+fi
+
+for f in "${REQUIRED_FILES[@]}"; do
+    [[ -f "$INCOMING/$f" ]] || fail "staged tree missing required file: $f"
+done
+
+# ---- stage 2/4: copying -----------------------------------------------
+progress 2 copying
+
+rm -rf "$NEW"
+mkdir -p "$NEW"
+rsync -a --exclude '__pycache__' --exclude '*.pyc' --exclude 'splash/' \
+    "$INCOMING/" "$NEW/"
+
+# splash/ is never part of incoming/ (build_card.sh generates it
+# on-device, and the host rsync excludes it too) — carry the live copy
+# forward so the assembled tree keeps the invariant the card build
+# guarantees, instead of relying on --delete sparing a path it never
+# received in the first place.
+if [[ -d $DEST/splash ]]; then
+    cp -a "$DEST/splash" "$NEW/splash"
+fi
+
+# Before-commit checks (phase-0-ota-contracts.md §3 table): refuse to
+# switch the live tree at all if the one we just assembled fails either
+# invariant. $DEST is untouched up to this point.
+for f in "${REQUIRED_FILES[@]}"; do
+    [[ -f "$NEW/$f" ]] || fail "assembled tree missing required file: $f (unreachable if the manifest check above is correct)"
+done
+NEW_SPLASH_SIZE=$(stat -c%s "$NEW/splash/splash.bin" 2>/dev/null || echo 0)
+if [[ $NEW_SPLASH_SIZE -ne 1024 ]]; then
+    fail "$NEW/splash/splash.bin missing or wrong size ($NEW_SPLASH_SIZE bytes, expected 1024) — live tree untouched"
+fi
+
+# ---- stage 3/4: committing --------------------------------------------
+progress 3 committing
+
+# chown to root requires root, which the test-mode harness deliberately
+# doesn't run as; chmod needs no privilege beyond owning the files, so it
+# still runs and is still worth exercising.
+if [[ -z ${OTA_APPLY_TEST_MODE:-} ]]; then
+    chown -R 0:0 "$NEW"
+fi
+chmod -R a+rX "$NEW"
+
+# Keep one generation of rollback (phase-0-ota-contracts.md §3 / phase 4
+# deliverable 2): if the tree we're about to make live turns out to be
+# bad after all, or the service never comes back up, $PREV is one `mv`
+# away from restoring the last known-good install. Each of the two `mv`s
+# below is a same-filesystem rename and individually atomic; the brief
+# window between them is not observable by anything but a bystander
+# statting $DEST at that exact instant, since the process already
+# running has everything it needs loaded from the old inodes.
+rm -rf "$PREV"
+mv "$DEST" "$PREV"
+mv "$NEW" "$DEST"
+
+# After-commit re-check (same table, other column): the tree is live now,
+# but the service has not been restarted into it yet, so a failure here
+# is still cheap to undo — roll straight back rather than leave a broken
+# tree for `systemctl restart` (and Restart=on-failure after it) to run
+# against.
+SPLASH_SIZE=$(stat -c%s "$DEST/splash/splash.bin" 2>/dev/null || echo 0)
+COMMIT_OK=1
+[[ $SPLASH_SIZE -eq 1024 ]] || COMMIT_OK=0
+if [[ -z ${OTA_APPLY_TEST_MODE:-} ]]; then
+    OWNER=$(stat -c%U:%G "$DEST" 2>/dev/null || echo "")
+    [[ $OWNER == root:root ]] || COMMIT_OK=0
+fi
+if [[ $COMMIT_OK -ne 1 ]]; then
+    rm -rf "$DEST"
+    mv "$PREV" "$DEST"
+    fail "post-commit verification failed on the new tree; rolled back to the previous install"
+fi
+
+# ---- stage 4/4: restarting ---------------------------------------------
+progress 4 restarting
+
+# Belt-and-braces: the app already clears `pending` immediately before
+# invoking us, and never writes `failed` on success, but a successful
+# apply here should never leave any of these behind regardless of caller.
+rm -f "$PENDING" "$FAILED" "$PROGRESS" "$MANIFEST"
+# Staging can be cleared; next sync refills it.
+rm -rf "$INCOMING"
+mkdir -p "$INCOMING"
+
+# Testing hook: tests/test_ota_apply.py sets this to skip the two
+# operations that need root and a live host. Never set on the device.
+if [[ -n ${OTA_APPLY_TEST_MODE:-} ]]; then
+    echo "ota-apply: test mode — skipping chown/systemctl" >&2
+else
+    chown -R reader:reader "$OTA_DIR"
+    systemctl restart rapid-reader
+fi
