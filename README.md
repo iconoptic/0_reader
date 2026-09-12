@@ -186,6 +186,51 @@ python3 tools/pdf_to_txt.py book.pdf --out ebooks/
 
 Copy the resulting `.txt` to the device as above.
 
+## Syncing to a live Pi (OTA)
+
+Host-side sync (app + local `ebooks/`) uses SSH. Put the target in
+gitignored `pi.env` at the repo root (see `pi.env.example`) — not in
+`ssh_salvage/`, which is inbound card-build input only:
+
+```sh
+PI_SSH=reader@raspberrypi.local
+```
+
+```sh
+tools/sync_to_pi.sh              # stage app + ebooks, set ota/pending
+tools/sync_to_pi.sh --app-only
+tools/sync_to_pi.sh --ebooks-only
+```
+
+The running app detects `ota/pending`, wakes the display, shows a
+progress bar, runs `/usr/local/sbin/rapid-reader-ota-apply` (copies
+staged files into `/opt/rapid-reader`, restarts the service).
+
+### First-time bootstrap
+
+The live image needs the apply helper and an updated sudoers rule once
+(new cards from `build_card.sh` already include them). From a machine
+that can SSH as `reader` with a password sudo (or root):
+
+```sh
+scp system/rapid-reader-ota-apply reader@HOST:/tmp/
+ssh reader@HOST
+sudo install -m 755 /tmp/rapid-reader-ota-apply /usr/local/sbin/rapid-reader-ota-apply
+sudo tee /etc/sudoers.d/010_rapid-reader >/dev/null <<'EOF'
+reader ALL=(root) NOPASSWD: /usr/sbin/poweroff, /usr/sbin/reboot, /usr/local/sbin/rapid-reader-ota-apply
+EOF
+sudo chmod 440 /etc/sudoers.d/010_rapid-reader
+exit
+
+# Push OTA-capable app and apply immediately (before the old app knows
+# how to watch for pending):
+tools/sync_to_pi.sh --bootstrap
+```
+
+`--bootstrap` installs the helper/sudoers when `sudo -n` works, stages
+the app, and force-applies. After that, plain `tools/sync_to_pi.sh` is
+enough — the in-app OTA UI handles the rest.
+
 ## Development & tests
 
 The app is a flat module tree under `rapid_reader/` (not an installable

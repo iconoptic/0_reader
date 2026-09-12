@@ -54,6 +54,7 @@ Shown right after opening a book, or after pausing. Same bindings as
 | Input | Action |
 |-------|--------|
 | left / right hold (repeat) | jump one chapter back / forward |
+| up / down tap | wpm ± `WPM_STEP`; brief overlay shows remaining time (d/h/m/s) |
 
 Chapter skip only works where a heading could be detected in the book
 (see below); otherwise those holds do nothing.
@@ -136,11 +137,21 @@ restart. Idle dim/off still apply on top of this while idle.
 | IP address | Shows the device IP (or `no network`) |
 | Disk free | Free space under the books directory |
 | Version | `config.VERSION` |
+| Screen test | Full-screen black/white; press/up/down toggles; K1 back |
 | Reboot | Confirm, then reboot |
 | Power off | Confirm, save state, then power off |
 
 Reboot and power-off use `sudo -n` when not running as root (passwordless
-sudo on the appliance image).
+sudo on the appliance image). OTA apply uses the same pattern for
+`/usr/local/sbin/rapid-reader-ota-apply`.
+
+## OTA updates
+
+When `tools/sync_to_pi.sh` stages a new app tree and writes
+`/var/lib/rapid-reader/ota/pending`, the running app wakes the panel
+(if asleep), interrupts the current screen, shows an update progress
+bar, installs the staged files, and restarts `rapid-reader.service`.
+Input is ignored on the OTA screen.
 
 ## Bookmarks
 
