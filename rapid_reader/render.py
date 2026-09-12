@@ -184,11 +184,11 @@ def _flash_badge(d, text):
     d.text((x0 + (x1 - x0 - tw) / 2, y0 + 1), text, font=fnt, fill=BG)
 
 
-def remaining_overlay(img, text):
-    """Centered inverted band for remaining-time flash on the pause screen."""
+def remaining_overlay(img, text, theme):
+    """Centered inverted band for remaining-time flash on the pause screen.
+    Uses the same theme face as the surrounding paused_frame."""
     d = ImageDraw.Draw(img)
-    t = _default_theme()
-    fnt = themes.font(t, 10, bold=True)
+    fnt = themes.font(theme, 10, bold=True)
     text = _ellipsize(d, text, fnt, W - 10)
     tw = d.textlength(text, font=fnt)
     pad_x, bh = 5, 14
@@ -388,11 +388,9 @@ def paused_frame(title, words, idx, sentence_start, wpm, progress, theme,
             break
     sentence = words[sentence_start:end]
     if not sentence:
-        img = _finalize(img)
         if flash:
-            remaining_overlay(img, flash)
-            img = _finalize(img)
-        return img
+            remaining_overlay(img, flash, theme)
+        return _finalize(img)
 
     reg = themes.font(theme, 10)
     bold = themes.font(theme, 10, bold=True)
@@ -433,11 +431,9 @@ def paused_frame(title, words, idx, sentence_start, wpm, progress, theme,
                 d.line([(x, y + 10), (x + wlen, y + 10)], fill=INK)
             x += d.textlength(tok + " ", font=fnt)
         y += line_h
-    img = _finalize(img)
     if flash:
-        remaining_overlay(img, flash)
-        img = _finalize(img)
-    return img
+        remaining_overlay(img, flash, theme)
+    return _finalize(img)
 
 
 def info_frame(title, ext, position, total_words, wpm, time_read_secs):

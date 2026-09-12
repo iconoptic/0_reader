@@ -248,8 +248,18 @@ def test_progress_frame_and_remaining_overlay():
     assert img.size == (config.OLED_W, config.OLED_H)
     assert img.mode == "L"
     base = render.message_frame(["hi"])
-    out = render.remaining_overlay(base.copy(), "1h 2m 3s left")
+    out = render.remaining_overlay(base.copy(), "1h 2m 3s left", _night())
     assert out.size == base.size
+    # Non-default theme must drive the overlay face (F9), not _default_theme().
+    night = render.remaining_overlay(base.copy(), "1h 2m 3s left", _night())
+    mono = render.remaining_overlay(
+        base.copy(), "1h 2m 3s left", theme.THEMES["mono"])
+    assert night.tobytes() != mono.tobytes()
+    # Overlay is folded into paused_frame before the single finalize.
+    paused = render.paused_frame(
+        "T", ["One", "two.", "Three."], 1, 0, 150, 0.2, _night(),
+        flash="2m left")
+    assert paused.size == (W, H) and _only_01(paused)
 
 
 @pytest.mark.parametrize("key", ["night", "focus", "dim", "mono"])

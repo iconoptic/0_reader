@@ -1,7 +1,17 @@
 # Phase 5 — UX polish and truthful docs
 
-**Status:** not started. **Depends on:** phases 1, 3, 4 (the doc
+**Status:** done. **Depends on:** phases 1, 3, 4 (the doc
 portion strictly last). **Fixes:** F8, F9, F10.
+
+**What landed:** `ScreenTestScreen` suppresses idle dim/off while on
+top, pins `IDLE_ACTIVE_CONTRAST` on enter and restores the theme's
+contrast on exit, and cycles all-on → all-off → 1px checkerboard.
+`remaining_overlay` takes the active `theme` (passed from both
+`paused_frame` sites) and the overlay is drawn before a single
+`_finalize`. README / CONTROLS OTA sections rewritten against the
+landed sync/bootstrap/preflight/progress/failure behaviour; screen-test
+third mode documented. `docs/README.md` and this directory's README
+mark plan_1 as landed/historical.
 
 Everything here is small. It lands last because the documentation must
 describe what the device actually does.

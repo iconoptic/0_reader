@@ -531,6 +531,19 @@ def test_idle_never_dims_while_reading(app, monkeypatch):
     assert a.display.panel.sleeping is False
 
 
+def test_idle_never_dims_on_screen_test(app, monkeypatch):
+    monkeypatch.setattr(config, "IDLE_DIM_SECS", 0.01)
+    monkeypatch.setattr(config, "IDLE_OFF_SECS", 0.02)
+    a = boot(app)
+    a.push(screens.ScreenTestScreen())
+    assert a.display.panel.contrast_level == config.IDLE_ACTIVE_CONTRAST
+    a._last_input_at = time.monotonic() - 10
+    a._tick_idle()
+    assert a._idle_state == "active"
+    assert a.display.panel.sleeping is False
+    assert a.display.panel.contrast_level == config.IDLE_ACTIVE_CONTRAST
+
+
 def test_wake_key_is_swallowed(app, monkeypatch):
     monkeypatch.setattr(config, "IDLE_DIM_SECS", 0.05)
     monkeypatch.setattr(config, "IDLE_OFF_SECS", 0.1)
@@ -799,15 +812,21 @@ def test_system_screen_info_and_power(app, tmp_path, monkeypatch):
         fire(a, "k1")
         assert isinstance(a.stack[-1], screens.SystemScreen)
 
-    # screen test: full black/white toggle
+    # screen test: all-on → all-off → checkerboard → all-on; K1 back
     sys_screen.sel = sys_screen.items(a).index("Screen test")
     fire(a, "press")
     assert isinstance(a.stack[-1], screens.ScreenTestScreen)
-    assert a.stack[-1]._ink is True
+    assert a.stack[-1]._mode == 0
+    assert a.display.panel.contrast_level == config.IDLE_ACTIVE_CONTRAST
     fire(a, "press")
-    assert a.stack[-1]._ink is False
+    assert a.stack[-1]._mode == 1
+    fire(a, "press")
+    assert a.stack[-1]._mode == 2
+    fire(a, "press")
+    assert a.stack[-1]._mode == 0
     fire(a, "k1")
     assert isinstance(a.stack[-1], screens.SystemScreen)
+    assert a.display.panel.contrast_level == a.theme.contrast
 
     # reboot / power off via confirm; monkeypatch subprocess
     calls = []

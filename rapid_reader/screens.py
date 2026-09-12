@@ -513,22 +513,53 @@ class SystemScreen(ListScreen):
 
 
 class ScreenTestScreen(Screen):
-    """Full-screen black/white toggle for spotting stuck OLED pixels."""
+    """Full-field pixel patterns for spotting stuck/dead OLED pixels and
+    row/column driver faults. Cycles all-on → all-off → 1px checkerboard.
+    Holds full brightness for the whole visit (idle dim/off suppressed)."""
+
+    _MODES = ("on", "off", "checker")
 
     def __init__(self):
-        self._ink = True  # True = all pixels on (white)
+        self._mode = 0  # index into _MODES
+
+    def on_enter(self, app):
+        # Pin contrast for a uniformly driven field; idle must not dim
+        # this screen while the user is hunting for bad pixels (F8).
+        app._last_input_at = time.monotonic()
+        app._idle_state = "active"
+        try:
+            app.display.wake()
+            app.display.contrast(config.IDLE_ACTIVE_CONTRAST)
+        except Exception:
+            pass
+
+    def on_exit(self, app):
+        try:
+            app.display.contrast(app.theme.contrast)
+        except Exception:
+            pass
 
     def frame(self, app):
         from PIL import Image
-        fill = 255 if self._ink else 0
-        return Image.new("L", (config.OLED_W, config.OLED_H), fill)
+        mode = self._MODES[self._mode]
+        if mode == "on":
+            return Image.new("L", (config.OLED_W, config.OLED_H), 255)
+        if mode == "off":
+            return Image.new("L", (config.OLED_W, config.OLED_H), 0)
+        img = Image.new("L", (config.OLED_W, config.OLED_H), 0)
+        px = img.load()
+        for y in range(config.OLED_H):
+            for x in range(config.OLED_W):
+                if (x ^ y) & 1:
+                    px[x, y] = 255
+        return img
 
     def handle(self, app, event):
         name, kind = event
         if name == "k1" and kind == "tap":
             app.pop()
         elif name in ("press", "up", "down") and kind == "tap":
-            self._ink = not self._ink
+            self._mode = (self._mode + 1) % len(self._MODES)
             app.redraw()
 
 

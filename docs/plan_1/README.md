@@ -1,14 +1,15 @@
 # Rapid Reader — plan_1: OTA / sync untangle
 
-**Status: active.** This directory is the live roadmap for the work that
-followed the SH1106 overhaul ([plan_0/](../plan_0/), landed and
-historical). Unlike plan_0, these briefs describe work that has **not**
-landed; the current tree contains a first, unplanned attempt at it.
+**Status: landed.** This directory is the historical roadmap for the work
+that followed the SH1106 overhaul ([plan_0/](../plan_0/), landed and
+historical). For current sync/OTA behaviour, use the root
+[README.md](../../README.md) and [CONTROLS.md](../../CONTROLS.md) — not
+the per-phase status lines inside the briefs below.
 
 ## Why this directory exists
 
-The feature request that produced the current working tree asked for
-three things:
+The feature request that produced the working tree asked for three
+things:
 
 1. a remaining-time overlay when wpm changes on the pause screen,
 2. a dead-pixel screen test in the System menu,
@@ -16,61 +17,51 @@ three things:
    whatever is running, shows a progress bar, and restarts into the new
    code.
 
-Items 1 and 2 are small, self-contained, and were implemented
-essentially correctly (see "What is actually fine" below). Item 3 is a
-different animal: it introduces a **root-privileged helper**, a **new
-sudoers rule**, a **non-dismissible screen**, and a **trigger that fires
-before the user touches anything**. It is the one part of the request
-that can leave the device unbootable, and it is the one part that was
-written with no contract doc at all — `docs/plan_1/` was an empty
-placeholder when the code was written.
-
-That is the root cause, and it is worth naming plainly rather than
-filing as one more bug: plan_0 pinned every signature, constant and file
-layout *before* an agent touched code, and the result needed almost no
-rework. The OTA work skipped that step and produced a design that cannot
-succeed on the hardware it targets (F3), cannot recover when it fails
-(F1), and quietly destroys device state when it succeeds (F2).
+Items 1 and 2 were small and mostly correct on first pass. Item 3
+introduced a root-privileged helper, a new sudoers rule, a
+non-dismissible screen, and a trigger that fires before the user
+touches anything — written with no contract doc. plan_0 had pinned
+every signature before coding; the OTA work skipped that and produced
+designs that could not succeed on the target hardware (F3), could not
+recover when they failed (F1), and quietly destroyed device state when
+they succeeded (F2). This directory is the gap review and the six phase
+briefs that fixed it.
 
 ## What is actually fine
 
-Do not rewrite these; they are not the problem.
+Do not rewrite these; they were not the problem (F8/F9 polish landed in
+phase 5).
 
 - **Remaining-time overlay.** `App.change_wpm` branches on
   `PausedScreen` and formats via `render.fmt_duration_hms`
   (days/hours/minutes/seconds, leading zero units omitted);
-  `render.remaining_overlay` draws a centred inverted band.
-  `ReadingScreen` keeps the old corner `"%d wpm"` flash. Both paths are
-  wired through the existing `_flash_text` / `_flash_until` fields. Only
-  two nits, both cosmetic — see [phase-5](phase-5-ux-and-docs.md).
-- **Screen test.** `ScreenTestScreen` is a correct full-field toggle at
-  `config.OLED_W`/`OLED_H` in mode `"L"`, which matches `render._canvas`;
-  no `_finalize` is needed for a solid fill. One real usability defect
-  (it blanks itself) — see [phase-5](phase-5-ux-and-docs.md).
-- **`pop_to_root` hardening.** The change forcing the stack back to a
-  `LibraryScreen` root fixes a genuine pre-existing bug (a resume stack
-  with no Library under it) and has three tests.
-- **`_check_ota` polling placement.** Both loop arms (`get_nowait` while
-  reading, `get(timeout=1.0)` elsewhere) return to the top of the loop,
-  so pending is detected within ~1 s on any screen. This part of the
-  "interrupt whatever is happening" requirement is met.
+  `render.remaining_overlay` draws a centred inverted band using the
+  active theme. `ReadingScreen` keeps the corner `"%d wpm"` flash.
+- **Screen test.** `ScreenTestScreen` cycles all-on / all-off / 1px
+  checkerboard at `config.OLED_W`/`OLED_H`, holds
+  `IDLE_ACTIVE_CONTRAST`, and suppresses idle dim/off while on top.
+- **`pop_to_root` hardening.** Forces the stack back to a
+  `LibraryScreen` root; three tests.
+- **`_check_ota` polling placement.** Both loop arms return to the top
+  of the loop, so pending is detected within ~1 s on any screen.
 
 ## Findings
 
-Severity is about the device, not the code.
+Severity is about the device, not the code. **What landed** notes what
+phases 0–5 actually shipped vs the original brief.
 
-| # | Sev | Finding |
-|---|-----|---------|
-| F1 | **Critical** | A failed OTA hangs the device permanently, and survives a power cycle. |
-| F2 | **High** | The first successful OTA deletes the boot splash. |
-| F3 | **High** | `--bootstrap` cannot work on any already-flashed card, by construction. |
-| F4 | **High** | Host SSH config was written into the device-provisioning directory; its current location is not gitignored. |
-| F5 | **Medium** | `sync_to_pi.sh` arms an OTA without checking the device can apply it. |
-| F6 | **Medium** | `--delete` install from an unvalidated staging tree; no atomicity, no rollback. |
-| F7 | **Medium** | The progress bar is theatre and blocks the event loop. |
-| F8 | **Low** | The screen test blanks itself mid-test. |
-| F9 | **Low** | The remaining-time overlay ignores the active theme. |
-| F10 | **Low** | README/CONTROLS document the intended flow as if it worked. |
+| # | Sev | Finding | What landed |
+|---|-----|---------|-------------|
+| F1 | **Critical** | A failed OTA hangs the device permanently, and survives a power cycle. | Fixed as specified (phase 1): dismissible failure, `ota/failed` marker, pending cleared before spawn. |
+| F2 | **High** | The first successful OTA deletes the boot splash. | Fixed as specified (phase 1): helper preserves/carries `splash/` across apply. |
+| F3 | **High** | `--bootstrap` cannot work on any already-flashed card, by construction. | Fixed as specified (phase 3): interactive `ssh -t` sudo; see also the phase-3 deviation note (app-version preflight does not gate `--force-apply`). |
+| F4 | **High** | Host SSH config was written into the device-provisioning directory; its current location is not gitignored. | Fixed as specified (phase 2): repo-root `pi.env` + gitignore. |
+| F5 | **Medium** | `sync_to_pi.sh` arms an OTA without checking the device can apply it. | Fixed as specified (phase 3): preflight before arming; refuses and names `--bootstrap`. |
+| F6 | **Medium** | `--delete` install from an unvalidated staging tree; no atomicity, no rollback. | Fixed as specified (phase 4): manifest verify, `$DEST.new` / `.prev` swap, post-swap rollback. |
+| F7 | **Medium** | The progress bar is theatre and blocks the event loop. | Fixed as specified (phase 4): `Popen` + poll; bar maps `ota/progress` stages. |
+| F8 | **Low** | The screen test blanks itself mid-test. | Fixed as specified (phase 5), plus a third checkerboard mode. |
+| F9 | **Low** | The remaining-time overlay ignores the active theme. | Fixed as specified (phase 5): `theme` param; single `_finalize`. |
+| F10 | **Low** | README/CONTROLS document the intended flow as if it worked. | Fixed as specified (phase 5): docs rewritten against the landed sync/OTA behaviour. |
 
 ### F1 — A failed OTA bricks the device (critical)
 
@@ -238,9 +229,9 @@ any new OTA behaviour is attempted.
 | 0 | [phase-0-ota-contracts.md](phase-0-ota-contracts.md) | — | — | ✅ done |
 | 1 | [phase-1-recovery.md](phase-1-recovery.md) | F1, F2 | 0 | ✅ done |
 | 2 | [phase-2-secrets-and-config.md](phase-2-secrets-and-config.md) | F4 | — | ✅ done |
-| 3 | [phase-3-bootstrap.md](phase-3-bootstrap.md) | F3, F5 | 0, 2 | ✅ code done; device run pending |
-| 4 | [phase-4-atomic-apply.md](phase-4-atomic-apply.md) | F6, F7 | 0, 1 | not started |
-| 5 | [phase-5-ux-and-docs.md](phase-5-ux-and-docs.md) | F8, F9, F10 | 1, 3, 4 | not started |
+| 3 | [phase-3-bootstrap.md](phase-3-bootstrap.md) | F3, F5 | 0, 2 | ✅ done |
+| 4 | [phase-4-atomic-apply.md](phase-4-atomic-apply.md) | F6, F7 | 0, 1 | ✅ done |
+| 5 | [phase-5-ux-and-docs.md](phase-5-ux-and-docs.md) | F8, F9, F10 | 1, 3, 4 | ✅ done |
 
 Phase 2 touches only gitignore/docs/one path constant and can run in
 parallel with 0 and 1. Phase 5's doc portion must land last, since it

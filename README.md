@@ -186,6 +186,22 @@ python3 tools/pdf_to_txt.py book.pdf --out ebooks/
 
 Copy the resulting `.txt` to the device as above.
 
+### Cleaning up .txt files for RSVP
+
+`tools/txt_to_txt.py` rewrites `.txt` files in place to read better as RSVP:
+it rejoins words that got hard-wrapped across a line break (a common PDF/OCR
+artifact), adds a space after hyphens in compound words
+(`out-of-the-way` → `out- of- the- way`), and splits any remaining long word
+into readable chunks (de-concatenating accidental run-together words, then
+syllable-splitting whatever's still long). It backs up each original to
+`<file>.orig` the first time it touches it.
+
+```sh
+pip install -r tools/requirements.txt   # wordninja, pyphen
+python3 tools/txt_to_txt.py             # all ebooks/*.txt, in place
+python3 tools/txt_to_txt.py book.txt    # or specific files
+```
+
 ## Syncing to a live Pi (OTA)
 
 Host-side sync (app + local `ebooks/`) uses SSH. Put the target in
@@ -197,39 +213,46 @@ PI_SSH=reader@raspberrypi.local
 ```
 
 ```sh
-tools/sync_to_pi.sh              # stage app + ebooks, set ota/pending
+tools/sync_to_pi.sh              # stage app + ebooks, arm ota/pending
 tools/sync_to_pi.sh --app-only
 tools/sync_to_pi.sh --ebooks-only
+tools/sync_to_pi.sh --force-apply  # stage, then apply now over SSH
 ```
 
-The running app detects `ota/pending`, wakes the display, shows a
-progress bar, runs `/usr/local/sbin/rapid-reader-ota-apply` (copies
-staged files into `/opt/rapid-reader`, restarts the service).
+Before arming `ota/pending`, the script checks that the apply helper is
+installed and byte-identical to this repo's copy, that
+`sudo -n /usr/local/sbin/rapid-reader-ota-apply --check` works, and that
+the app on the device already understands `ota/pending` / `ota/failed`.
+If any check fails it refuses to write `pending` and tells you to run
+`--bootstrap`.
+
+When `pending` is armed, the running app wakes the panel, shows a
+progress screen driven by real helper stages (verifying → copying →
+committing → restarting), runs the helper under `sudo -n`, and the
+service restarts into the new tree. On failure the screen shows
+`Update failed (...)`; **K1** dismisses it back to the library (see
+[CONTROLS.md](CONTROLS.md#ota-updates)).
 
 ### First-time bootstrap
 
-The live image needs the apply helper and an updated sudoers rule once
-(new cards from `build_card.sh` already include them). From a machine
-that can SSH as `reader` with a password sudo (or root):
+Cards built by `tools/build_card.sh` already ship the helper and
+sudoers rule — they need nothing. `--bootstrap` is a **one-time
+migration** for cards flashed before OTA existed:
 
 ```sh
-scp system/rapid-reader-ota-apply reader@HOST:/tmp/
-ssh reader@HOST
-sudo install -m 755 /tmp/rapid-reader-ota-apply /usr/local/sbin/rapid-reader-ota-apply
-sudo tee /etc/sudoers.d/010_rapid-reader >/dev/null <<'EOF'
-reader ALL=(root) NOPASSWD: /usr/sbin/poweroff, /usr/sbin/reboot, /usr/local/sbin/rapid-reader-ota-apply
-EOF
-sudo chmod 440 /etc/sudoers.d/010_rapid-reader
-exit
-
-# Push OTA-capable app and apply immediately (before the old app knows
-# how to watch for pending):
 tools/sync_to_pi.sh --bootstrap
 ```
 
-`--bootstrap` installs the helper/sudoers when `sudo -n` works, stages
-the app, and force-applies. After that, plain `tools/sync_to_pi.sh` is
-enough — the in-app OTA UI handles the rest.
+It installs `/usr/local/sbin/rapid-reader-ota-apply` and the scoped
+sudoers rule (using passwordless sudo when available, otherwise
+prompting once for the Pi's `reader` password), stages the app, and
+force-applies immediately. Re-running it is a no-op when everything is
+already current. After that, plain `tools/sync_to_pi.sh` is enough.
+
+If bootstrap cannot reach the device (no SSH at all), copy
+`system/rapid-reader-ota-apply` to the Pi and install the helper plus
+the sudoers line from that script's fallback instructions, then re-run
+`--bootstrap` once SSH works.
 
 ## Development & tests
 

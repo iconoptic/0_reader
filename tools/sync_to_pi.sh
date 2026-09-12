@@ -10,6 +10,7 @@
 #   tools/sync_to_pi.sh --app-only      # skip ebooks/
 #   tools/sync_to_pi.sh --ebooks-only   # books only; arms nothing
 #   tools/sync_to_pi.sh --force-apply   # stage, then apply now over SSH
+#   tools/sync_to_pi.sh --no-convert    # skip the local txt_to_txt.py pass
 #   tools/sync_to_pi.sh --bootstrap     # one-time migration for cards
 #                                       # flashed before OTA existed:
 #                                       # installs the apply helper and
@@ -19,6 +20,13 @@
 #
 # Cards built by tools/build_card.sh already ship the helper and the
 # sudoers rule, so --bootstrap is not part of the normal workflow.
+#
+# Before every ebooks/ sync, tools/txt_to_txt.py is run locally over
+# ebooks/*.txt (RSVP cleanup, in place — see README.md). It's idempotent
+# and backs up each file to <name>.txt.orig the first time it touches
+# it, so re-running sync repeatedly is safe. --no-convert skips this if
+# you want to push books as-is. The .orig backups themselves are never
+# rsynced to the device.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -27,6 +35,7 @@ SYNC_APP=1
 SYNC_EBOOKS=1
 FORCE_APPLY=0
 BOOTSTRAP=0
+CONVERT=1
 
 usage() {
     # Print the header comment block, whatever length it grows to.
@@ -39,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --app-only) SYNC_EBOOKS=0 ;;
         --ebooks-only) SYNC_APP=0 ;;
         --force-apply) FORCE_APPLY=1 ;;
+        --no-convert) CONVERT=0 ;;
         --bootstrap) BOOTSTRAP=1; FORCE_APPLY=1; SYNC_APP=1 ;;
         -h|--help) usage 0 ;;
         *) echo "unknown option: $1" >&2; usage 1 ;;
@@ -324,8 +334,13 @@ fi
 
 if [[ $SYNC_EBOOKS -eq 1 ]]; then
     if [[ -d $HERE/ebooks ]]; then
+        if [[ $CONVERT -eq 1 ]]; then
+            log "txt_to_txt.py: RSVP cleanup of ebooks/*.txt (in place)"
+            python3 "$HERE/tools/txt_to_txt.py"
+        fi
         log "rsync ebooks/ → $PI_SSH:$BOOKS_REMOTE/"
         rsync -az \
+            --exclude '*.orig' \
             -e ssh \
             "$HERE/ebooks/" "$PI_SSH:$BOOKS_REMOTE/"
     else

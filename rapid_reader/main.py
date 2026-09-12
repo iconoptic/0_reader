@@ -132,6 +132,10 @@ class App:
         self.redraw()
 
     def _tick_idle(self):
+        # Screen test must stay fully lit while hunting for bad pixels —
+        # same idle exemption in-progress OTA gets via _ota_blocking().
+        if self.stack and isinstance(self.stack[-1], screens.ScreenTestScreen):
+            return
         idle_for = time.monotonic() - self._last_input_at
         reading = self.stack and isinstance(self.stack[-1], screens.ReadingScreen)
         if reading:

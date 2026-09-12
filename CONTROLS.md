@@ -137,7 +137,7 @@ restart. Idle dim/off still apply on top of this while idle.
 | IP address | Shows the device IP (or `no network`) |
 | Disk free | Free space under the books directory |
 | Version | `config.VERSION` |
-| Screen test | Full-screen black/white; press/up/down toggles; K1 back |
+| Screen test | Full-screen all-on / all-off / 1px checkerboard; press/up/down cycles; K1 back. Stays at full contrast (idle dim/off suppressed) until you leave. |
 | Reboot | Confirm, then reboot |
 | Power off | Confirm, save state, then power off |
 
@@ -147,11 +147,21 @@ sudo on the appliance image). OTA apply uses the same pattern for
 
 ## OTA updates
 
-When `tools/sync_to_pi.sh` stages a new app tree and writes
-`/var/lib/rapid-reader/ota/pending`, the running app wakes the panel
-(if asleep), interrupts the current screen, shows an update progress
-bar, installs the staged files, and restarts `rapid-reader.service`.
-Input is ignored on the OTA screen.
+`tools/sync_to_pi.sh` stages under `/var/lib/rapid-reader/ota/incoming/`,
+writes a sibling `manifest`, and — after preflight — arms
+`ota/pending` (or `--force-apply` installs over SSH without arming).
+The running app detects `pending`, wakes the panel if asleep, and pushes
+a non-dismissible progress screen.
+
+The bar tracks real helper stages written to `ota/progress`
+(`verifying` → `copying` → `committing` → `restarting`), not a
+synthetic animation. Input is ignored while the apply is in progress.
+On success the service restarts into the new tree.
+
+**On failure** the screen shows `Update failed (...)`. Tap **K1** to
+dismiss it and return to the library. A failure marker at `ota/failed`
+prevents auto-retry across reboots until the next successful host sync
+clears it. Idle dim/off apply again on the failed screen.
 
 ## Bookmarks
 
@@ -175,10 +185,12 @@ delete.
 
 ## Idle
 
-On any screen **except Reading**: no input for `IDLE_DIM_SECS` (60 s)
-drops contrast to `IDLE_DIM_CONTRAST`; no input for `IDLE_OFF_SECS`
-(300 s) puts the panel to sleep. Any key press wakes the panel and is
-**swallowed** — it is not passed to the active screen's handler.
+On any screen **except Reading**, **Screen test**, and an **in-progress
+OTA** update: no input for `IDLE_DIM_SECS` (60 s) drops contrast to
+`IDLE_DIM_CONTRAST`; no input for `IDLE_OFF_SECS` (300 s) puts the panel
+to sleep. Any key press wakes the panel and is **swallowed** — it is not
+passed to the active screen's handler. A failed OTA screen rejoins
+normal idle handling.
 
 ## Speed limits
 
