@@ -109,8 +109,14 @@ if grep -q '^pi:' "$ROOT/etc/shadow"; then
 else
     die "stock image has no 'pi' user in /etc/shadow"
 fi
-# ensure the account is not expired/locked in passwd
-sed -i -E 's|^pi:x:|pi:x:|' "$ROOT/etc/passwd" || true
+# Stock 'pi' ships with /usr/sbin/nologin -- sshd accepts the password and
+# then immediately closes the session. Give it a real shell.
+sed -i -E 's|^(pi:x:[^:]*:[^:]*:[^:]*:[^:]*:).*|\1/bin/bash|' "$ROOT/etc/passwd"
+# This image is cloud-init driven, and its default_user for 'pi' carries
+# lock_passwd: True -- on first boot it would re-lock the hash written above
+# and undo the account setup. We configure everything statically instead.
+: > "$ROOT/etc/cloud/cloud-init.disabled"
+rm -f "$BOOT"/user-data "$BOOT"/network-config "$BOOT"/meta-data
 
 install -d -m 700 -o 1000 -g 1000 "$ROOT/home/pi/.ssh"
 if [[ -n $SALVAGE && -f $SALVAGE/home/authorized_keys ]]; then
@@ -135,15 +141,19 @@ if [[ -n $SALVAGE && -s $SALVAGE/wifi.env ]]; then
     [[ -n $SSID && -n $PSK ]] || die "wifi.env must define SSID and PSK"
     install -d -m 755 "$ROOT/etc/NetworkManager/system-connections"
     NMF="$ROOT/etc/NetworkManager/system-connections/preconfigured.nmconnection"
+    # Same layout raspberrypi-sys-mods' `imager_custom set_wlan` writes, so
+    # the profile is byte-for-byte the shape NetworkManager expects.
     (umask 077; cat > "$NMF" <<EOF
 [connection]
 id=preconfigured
+uuid=$(cat /proc/sys/kernel/random/uuid)
 type=wifi
 autoconnect=true
 
 [wifi]
 mode=infrastructure
 ssid=$SSID
+hidden=false
 
 [wifi-security]
 key-mgmt=wpa-psk
@@ -155,6 +165,8 @@ method=auto
 [ipv6]
 method=auto
 addr-gen-mode=default
+
+[proxy]
 EOF
     )
     chown 0:0 "$NMF"; chmod 600 "$NMF"
@@ -171,14 +183,27 @@ done
 if [[ -n $SALVAGE && -d $SALVAGE/rfkill ]]; then
     cp -a "$SALVAGE"/rfkill/. "$ROOT/var/lib/systemd/rfkill/"
 fi
-if [[ -f $ROOT/etc/wpa_supplicant/wpa_supplicant.conf ]] && ! grep -q '^country=' "$ROOT/etc/wpa_supplicant/wpa_supplicant.conf"; then
-    echo "country=$WIFI_COUNTRY" >> "$ROOT/etc/wpa_supplicant/wpa_supplicant.conf"
-fi
-# also stamp regdomain on cmdline if not already present (harmless duplicate avoided)
+# NetworkManager remembers the radio kill switch across boots in this file,
+# and the stock image ships it set to false -- so NM soft-blocks wlan0 on
+# every boot no matter which profiles are installed. raspi-config flips it
+# in `do_wifi_country`; we configure the card offline and never run that, so
+# write it ourselves. Without this the Pi silently never joins any network.
+install -d -m 700 "$ROOT/var/lib/NetworkManager"
+printf '[main]\nWirelessEnabled=true\n' > "$ROOT/var/lib/NetworkManager/NetworkManager.state"
+chown 0:0 "$ROOT/var/lib/NetworkManager/NetworkManager.state"
+chmod 644 "$ROOT/var/lib/NetworkManager/NetworkManager.state"
+# Kernel command line: drop the initramfs `resize` flag (the partition was
+# already grown above) and stamp the regulatory domain. The cmdline is the
+# only place this image picks a domain up -- it is NetworkManager-only and
+# ships no /etc/wpa_supplicant/wpa_supplicant.conf for the old country= trick.
 CMD=$BOOT/cmdline.txt
-if [[ -f $CMD ]] && ! grep -q 'cfg80211.ieee80211_regdom=' "$CMD"; then
-    c=$(tr -d '\n' < "$CMD")
-    printf '%s cfg80211.ieee80211_regdom=%s\n' "$c" "$WIFI_COUNTRY" > "$CMD"
+if [[ -f $CMD ]]; then
+    c=$(cat "$CMD")
+    c=${c// resize/}
+    if ! grep -q 'cfg80211.ieee80211_regdom=' "$CMD"; then
+        c="$c cfg80211.ieee80211_regdom=$WIFI_COUNTRY"
+    fi
+    printf '%s\n' "$c" > "$CMD"
 fi
 
 log "finishing"

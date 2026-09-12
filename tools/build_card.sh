@@ -156,6 +156,10 @@ if inchroot id pi >/dev/null 2>&1; then
     inchroot usermod -l reader -d /home/reader -m pi
     inchroot groupmod -n reader pi
 fi
+# The stock placeholder ships with /usr/sbin/nologin; cloud-init would give
+# it a real shell on first boot, but we disable cloud-init -- so set it here
+# or every ssh login is refused with "This account is currently not available".
+inchroot usermod -s /bin/bash reader
 inchroot usermod -aG spi,gpio,video reader
 HASH=""
 if [[ -n $SALVAGE && -s $SALVAGE/etc/shadow ]]; then
@@ -195,15 +199,19 @@ if [[ -n $SALVAGE && -s $SALVAGE/wifi.env ]]; then
     [[ -n $SSID && -n $PSK ]] || die "wifi.env must define SSID and PSK"
     install -d -m 755 "$ROOT/etc/NetworkManager/system-connections"
     NMF="$ROOT/etc/NetworkManager/system-connections/preconfigured.nmconnection"
+    # Same layout raspberrypi-sys-mods' `imager_custom set_wlan` writes, so
+    # the profile is byte-for-byte the shape NetworkManager expects.
     (umask 077; cat > "$NMF" <<EOF
 [connection]
 id=preconfigured
+uuid=$(cat /proc/sys/kernel/random/uuid)
 type=wifi
 autoconnect=true
 
 [wifi]
 mode=infrastructure
 ssid=$SSID
+hidden=false
 
 [wifi-security]
 key-mgmt=wpa-psk
@@ -215,6 +223,8 @@ method=auto
 [ipv6]
 method=auto
 addr-gen-mode=default
+
+[proxy]
 EOF
     )
     chown 0:0 "$NMF"; chmod 600 "$NMF"
@@ -229,9 +239,18 @@ if [[ -n $SALVAGE && -d $SALVAGE/rfkill ]]; then
     install -d -m 755 "$ROOT/var/lib/systemd/rfkill"
     cp -a "$SALVAGE"/rfkill/. "$ROOT/var/lib/systemd/rfkill/"
 fi
-if [[ -f $ROOT/etc/wpa_supplicant/wpa_supplicant.conf ]] && ! grep -q '^country=' "$ROOT/etc/wpa_supplicant/wpa_supplicant.conf"; then
-    echo "country=$WIFI_COUNTRY" >> "$ROOT/etc/wpa_supplicant/wpa_supplicant.conf"
-fi
+# NetworkManager remembers the radio kill switch across boots in this file,
+# and the stock image ships it set to false -- so NM soft-blocks wlan0 on
+# every boot no matter which profiles are installed. raspi-config flips it
+# in `do_wifi_country`; we configure the card offline and never run that, so
+# write it ourselves. Without this the Pi silently never joins any network.
+install -d -m 700 "$ROOT/var/lib/NetworkManager"
+printf '[main]\nWirelessEnabled=true\n' > "$ROOT/var/lib/NetworkManager/NetworkManager.state"
+chown 0:0 "$ROOT/var/lib/NetworkManager/NetworkManager.state"
+chmod 644 "$ROOT/var/lib/NetworkManager/NetworkManager.state"
+# The regulatory domain is stamped on the kernel command line in the "boot
+# config" section above; this image is NetworkManager-only and ships no
+# /etc/wpa_supplicant/wpa_supplicant.conf for the old country= mechanism.
 
 # persistent journal so a bad boot can be read off the card afterwards
 # (must resolve the "systemd-journal" group *inside* the target chroot --
@@ -297,6 +316,8 @@ rm -f "$ROOT"/var/lib/rapid-reader/.lgd-nfy*
 grep -E '^(dtparam=spi=on|gpio=6,19,5,26,13,21,20,16=pu)$' "$CFG" >/dev/null || die "config.txt missing SPI/GPIO settings"
 grep -q 'spidev.bufsiz' "$CMD" || die "cmdline not updated"
 echo "hostname: $(cat "$ROOT/etc/hostname")  user: $(inchroot id reader)"
+grep -q '^WirelessEnabled=true$' "$ROOT/var/lib/NetworkManager/NetworkManager.state" \
+    || die "NetworkManager radio state not enabled -- wifi would stay soft-blocked"
 echo "wifi profiles: $(ls "$ROOT/etc/NetworkManager/system-connections" 2>/dev/null | wc -l)"
 echo "books: $(ls "$ROOT/home/reader/ebooks" | wc -l)"
 
