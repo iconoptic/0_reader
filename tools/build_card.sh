@@ -316,7 +316,7 @@ SPLASH_SIZE=$(stat -c%s "$SPLASH_BIN" 2>/dev/null || echo 0)
 inchroot su -s /bin/sh reader -c 'cd /var/lib/rapid-reader && timeout 120 python3 - <<"PY"
 import sys; sys.path.insert(0, "/opt/rapid-reader")
 import PIL, spidev, gpiozero, lgpio
-import config, oled, display, render, rsvp, books, theme, main
+import config, oled, display, render, rsvp, books, theme, main, latex
 img = render.word_frame("verify", theme.THEMES[theme.DEFAULT_THEME_KEY])
 assert img.size == (config.OLED_W, config.OLED_H)
 mode1 = img.point(lambda p: 255 if p >= 128 else 0, mode="1")

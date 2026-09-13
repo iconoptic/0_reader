@@ -9,6 +9,7 @@ import urllib.parse
 import zipfile
 
 import config
+import latex
 
 EXTENSIONS = (".txt", ".epub")
 
@@ -239,6 +240,7 @@ class Book:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
             title = stem
+        text = latex.convert(text)
         words, starts, para_ends, chapters, titles = _tokenize(text)
         return cls(path, title, words, starts, para_ends, chapters, titles)
 

@@ -45,6 +45,7 @@ settings are saved per book automatically.
 | `rapid_reader/contracts.py` | Shared `Theme` / `Screen` interfaces, control map, state v2 schema |
 | `rapid_reader/rsvp.py` | ORP + per-word timing (pure functions) |
 | `rapid_reader/books.py` | Library scan, `.txt`/`.epub` loading, tokenizer, chapter heuristics |
+| `rapid_reader/latex.py` | Best-effort LaTeX → Unicode conversion for math-heavy books (used by `books.py` at load time) |
 | `rapid_reader/buttons.py` | Tap / hold / repeat detection on top of `gpiozero.Button` |
 | `rapid_reader/config.py` | Pins, SPI, OLED size, contrast, paths, timing constants |
 | `system/rapid-reader.service` | systemd unit installed on the device |
@@ -189,6 +190,18 @@ python3 tools/pdf_to_txt.py book.pdf --out ebooks/
 
 Copy the resulting `.txt` to the device as above.
 
+### Math-heavy books (LaTeX)
+
+Books extracted from PDFs/arXiv sources of math or physics texts often carry
+literal LaTeX markup (`$\alpha^2 + \beta_i$`, `\frac{a}{b}`, ...) that reads
+badly one flashed word at a time. `rapid_reader/latex.py` converts common
+LaTeX to its closest plain-Unicode reading (greek letters, super/subscripts,
+fractions, roots, arrows, set/logic symbols, accents) automatically whenever
+a book is opened — no separate step needed. It's a text substitution, not a
+typesetting engine, so unsupported constructs degrade to readable plain text
+rather than raw markup. A bare `$` (e.g. "$5") is left alone; only content
+that actually looks like math gets converted.
+
 ### Cleaning up .txt files for RSVP
 
 `tools/txt_to_txt.py` rewrites `.txt` files in place to read better as RSVP:
@@ -287,6 +300,9 @@ Coverage:
 - `test_books.py` — tokenizer, heading heuristics and their false
   positives, synthetic EPUB extraction, library scan, every bundled book
   loads.
+- `test_latex.py` — LaTeX → Unicode conversion: greek letters, super/
+  subscripts, fractions, roots, symbols, the currency-safe `$..$` guard,
+  and that `Book.load()` applies it.
 - `test_buttons.py` — tap / hold / repeat timing, gpiozero construction
   parameters.
 - `test_oled.py` — SH1106 init / page writes, column offset, contrast,

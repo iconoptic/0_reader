@@ -70,8 +70,15 @@ OTA_TIMEOUT_SECS = 120.0
 
 # --- Stress test (System > Diagnostics) -------------------------------
 STRESS_LOG_DIR = STATE_DIR + "/stress"
-# (label, seconds) presets shown on the duration-picker screen.
-STRESS_DURATIONS = (("1 min", 60), ("5 min", 300), ("15 min", 900))
+# Base per-phase target Ts. Standalone RSVP/CPU runs last ~Ts; "Both" ~2Ts.
+STRESS_TS_SECS = 180
+# (label, mode) presets shown on the mode-picker screen.
+# mode is "rsvp" | "cpu" | "both".
+STRESS_MODES = (
+    ("RSVP (~3 min)", "rsvp"),
+    ("CPU (~3 min)", "cpu"),
+    ("Both (~6 min)", "both"),
+)
 # How often a temperature/throttle sample is recorded during a run;
 # independent of the (faster) progress-bar redraw cadence.
 STRESS_SAMPLE_SECS = 1.0

@@ -1037,11 +1037,11 @@ def _open_stress_test(a):
     return stress_screen
 
 
-def test_stress_test_duration_picker_shows_presets(app):
+def test_stress_test_mode_picker_shows_presets(app):
     a = _open_paused(app)
     stress_screen = _open_stress_test(a)
     assert stress_screen._phase == "ready"
-    labels = [label for label, _ in config.STRESS_DURATIONS]
+    labels = [label for label, _ in config.STRESS_MODES]
     img = stress_screen.frame(a)
     assert img.size == (config.OLED_W, config.OLED_H)
     assert len(labels) >= 1
@@ -1051,14 +1051,18 @@ def test_stress_test_duration_picker_shows_presets(app):
 
 
 def test_stress_test_full_run_produces_results(app, monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "STRESS_DURATIONS", (("quick", 0.05),))
+    monkeypatch.setattr(config, "STRESS_MODES", (("quick", "both"),))
+    monkeypatch.setattr(config, "STRESS_TS_SECS", 0.05)
     monkeypatch.setattr(config, "STRESS_LOG_DIR", str(tmp_path / "stress"))
     a = _open_paused(app)
     stress_screen = _open_stress_test(a)
 
     fire(a, "press")  # runs synchronously to completion
     assert stress_screen._phase == "results"
+    assert any(row.startswith("Mode: Both") for row in stress_screen._result_rows)
     assert any(row.startswith("Aborted: no") for row in stress_screen._result_rows)
+    assert any(row.startswith("CPU: ") for row in stress_screen._result_rows)
+    assert any(row.startswith("RSVP: ") for row in stress_screen._result_rows)
     assert any(row.startswith("Log: ") for row in stress_screen._result_rows)
     log_path = next(row for row in stress_screen._result_rows
                      if row.startswith("Log: "))[len("Log: "):]
@@ -1072,8 +1076,25 @@ def test_stress_test_full_run_produces_results(app, monkeypatch, tmp_path):
     assert isinstance(a.stack[-1], screens.DiagnosticsScreen)
 
 
+def test_stress_test_cpu_only_omits_rsvp_rows(app, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STRESS_MODES", (("cpu quick", "cpu"),))
+    monkeypatch.setattr(config, "STRESS_TS_SECS", 0.05)
+    monkeypatch.setattr(config, "STRESS_LOG_DIR", str(tmp_path / "stress"))
+    a = _open_paused(app)
+    stress_screen = _open_stress_test(a)
+
+    fire(a, "press")
+    assert stress_screen._phase == "results"
+    assert any(row.startswith("Mode: CPU") for row in stress_screen._result_rows)
+    assert any(row.startswith("CPU: ") for row in stress_screen._result_rows)
+    assert not any(row.startswith("RSVP: ") for row in stress_screen._result_rows)
+    assert not any(row.startswith("List: ") for row in stress_screen._result_rows)
+    assert not any(row.startswith("Paused: ") for row in stress_screen._result_rows)
+
+
 def test_stress_test_k1_aborts_mid_run(app, monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "STRESS_DURATIONS", (("long", 10.0),))
+    monkeypatch.setattr(config, "STRESS_MODES", (("long", "both"),))
+    monkeypatch.setattr(config, "STRESS_TS_SECS", 10.0)
     monkeypatch.setattr(config, "STRESS_LOG_DIR", str(tmp_path / "stress"))
     a = _open_paused(app)
     stress_screen = _open_stress_test(a)
@@ -1083,13 +1104,14 @@ def test_stress_test_k1_aborts_mid_run(app, monkeypatch, tmp_path):
     fire(a, "press")
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 5.0  # aborted well before the full 10s
+    assert elapsed < 5.0  # aborted well before the full run
     assert stress_screen._phase == "results"
     assert any(row.startswith("Aborted: yes") for row in stress_screen._result_rows)
 
 
 def test_stress_test_results_scroll_within_bounds(app, monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "STRESS_DURATIONS", (("quick", 0.05),))
+    monkeypatch.setattr(config, "STRESS_MODES", (("quick", "both"),))
+    monkeypatch.setattr(config, "STRESS_TS_SECS", 0.05)
     monkeypatch.setattr(config, "STRESS_LOG_DIR", str(tmp_path / "stress"))
     a = _open_paused(app)
     stress_screen = _open_stress_test(a)

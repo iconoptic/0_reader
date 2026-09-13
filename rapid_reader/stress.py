@@ -1,6 +1,11 @@
-"""Stress test engine: a generic CPU benchmark plus a simulated sequence
-of real reading-app activity, both run at maximum speed to help compare
-thermal hardware (e.g. two candidate heatsinks) on the Pi Zero W.
+"""Stress test engine: a generic CPU benchmark and/or a simulated
+sequence of real reading-app activity, both run at maximum speed to help
+compare thermal hardware (e.g. two candidate heatsinks) on the Pi Zero W.
+
+Modes (each phase lasts ~Ts = config.STRESS_TS_SECS):
+  rsvp — activity simulation only
+  cpu  — SHA256 bench only
+  both — CPU then activity (~2Ts)
 
 No hardware-only imports at module load (mirrors buttons.py/oled.py): this
 runs and is fully unit-testable on a dev box with no thermal sysfs and no
@@ -174,30 +179,43 @@ def simulate_activity(app, duration, on_tick=None, should_abort=None):
     return counts
 
 
-def _write_log(log_path, cpu_result, activity_result, samples, aborted):
+def _write_log(log_path, mode, phase_secs, cpu_result, activity_result,
+               samples, aborted):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "w", encoding="utf-8") as f:
         f.write("Rapid Reader stress test log\n")
+        f.write("mode: %s\n" % mode)
+        f.write("phase_secs: %s\n" % phase_secs)
         f.write("started: %s\n" % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         f.write("aborted: %s\n\n" % aborted)
-        f.write("== CPU bench ==\n")
-        for k, v in cpu_result.items():
-            f.write("%s: %s\n" % (k, v))
-        f.write("\n== Activity simulation ==\n")
-        for k, v in activity_result.items():
-            f.write("%s: %s\n" % (k, v))
-        f.write("\n== Samples (elapsed_s, temp_c, throttled) ==\n")
+        if cpu_result is not None:
+            f.write("== CPU bench ==\n")
+            for k, v in cpu_result.items():
+                f.write("%s: %s\n" % (k, v))
+            f.write("\n")
+        if activity_result is not None:
+            f.write("== Activity simulation ==\n")
+            for k, v in activity_result.items():
+                f.write("%s: %s\n" % (k, v))
+            f.write("\n")
+        f.write("== Samples (elapsed_s, temp_c, throttled) ==\n")
         for elapsed, temp, throttled in samples:
             f.write("%.1f, %s, %s\n" % (
                 elapsed, "%.1f" % temp if temp is not None else "n/a", throttled))
 
 
-def run(app, duration_secs, log_path, on_progress=None, should_abort=None):
-    """Run the full stress test: a CPU bench for the first half of
-    `duration_secs`, then the activity simulation for the second half.
+def run(app, log_path, mode, phase_secs=None, on_progress=None, should_abort=None):
+    """Run a stress test mode: "rsvp" (activity only), "cpu" (bench only),
+    or "both" (CPU then activity). Each included phase runs for
+    `phase_secs` (defaults to config.STRESS_TS_SECS), so "both" lasts ~2Ts.
     Samples temperature/throttle state at config.STRESS_SAMPLE_SECS
     cadence throughout, writes the full detail to `log_path`, and returns
-    a summary dict for the results screen."""
+    a summary dict for the results screen. Skipped-phase metrics are None."""
+    if phase_secs is None:
+        phase_secs = config.STRESS_TS_SECS
+    if mode not in ("rsvp", "cpu", "both"):
+        raise ValueError("unknown stress mode: %r" % (mode,))
+
     samples = []
     last_sample_at = [0.0]
     last_temp = [None]
@@ -216,33 +234,46 @@ def run(app, duration_secs, log_path, on_progress=None, should_abort=None):
             label = "%s  %s" % (phase, "%.0fC" % temp if temp is not None else "")
             on_progress(phase.lower().replace(" ", "_"), phase_fraction, label.strip())
 
-    half = duration_secs / 2.0
     aborted = False
+    cpu_result = None
+    activity_result = None
 
-    cpu_result = cpu_bench(
-        half, on_tick=lambda f: _sample_if_due("CPU bench", f),
-        should_abort=should_abort)
-    if should_abort and should_abort():
-        aborted = True
-        activity_result = {"loads": 0, "words": 0, "list_frames": 0, "paused_frames": 0}
-    else:
+    if mode in ("cpu", "both"):
+        cpu_result = cpu_bench(
+            phase_secs, on_tick=lambda f: _sample_if_due("CPU bench", f),
+            should_abort=should_abort)
+        if should_abort and should_abort():
+            aborted = True
+
+    if mode in ("rsvp", "both") and not aborted:
         activity_result = simulate_activity(
-            app, half, on_tick=lambda f: _sample_if_due("Activity sim", f),
+            app, phase_secs, on_tick=lambda f: _sample_if_due("Activity sim", f),
             should_abort=should_abort)
         if should_abort and should_abort():
             aborted = True
 
     throttled_final = read_throttled()
     temps = [t for _, t, _ in samples if t is not None]
-    _write_log(log_path, cpu_result, activity_result, samples, aborted)
+    _write_log(log_path, mode, phase_secs, cpu_result, activity_result,
+               samples, aborted)
+
+    words_per_sec = None
+    list_frames_per_sec = None
+    paused_frames_per_sec = None
+    if activity_result is not None and phase_secs > 0:
+        words_per_sec = activity_result["words"] / phase_secs
+        list_frames_per_sec = activity_result["list_frames"] / phase_secs
+        paused_frames_per_sec = activity_result["paused_frames"] / phase_secs
 
     return {
+        "mode": mode,
         "aborted": aborted,
         "elapsed": time.monotonic() - run_start,
-        "cpu_ops_per_sec": cpu_result["ops_per_sec"],
-        "words_per_sec": (activity_result["words"] / half) if half > 0 else 0.0,
-        "list_frames_per_sec": (activity_result["list_frames"] / half) if half > 0 else 0.0,
-        "paused_frames_per_sec": (activity_result["paused_frames"] / half) if half > 0 else 0.0,
+        "cpu_ops_per_sec": (cpu_result["ops_per_sec"]
+                            if cpu_result is not None else None),
+        "words_per_sec": words_per_sec,
+        "list_frames_per_sec": list_frames_per_sec,
+        "paused_frames_per_sec": paused_frames_per_sec,
         "temp_start": temps[0] if temps else None,
         "temp_end": temps[-1] if temps else None,
         "temp_min": min(temps) if temps else None,

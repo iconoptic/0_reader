@@ -63,14 +63,15 @@ Control map (Phase 1B / Phase 2)::
       Truncated highlighted rows marquee after 1s (same as Library).
 
     Stress test (System > Diagnostics > Stress test):
-      ready screen (duration picker):
+      ready screen (mode picker: RSVP ~Ts, CPU ~Ts, Both ~2Ts;
+      Ts = config.STRESS_TS_SECS):
         up/down — move selection      press — start the run
         K1      — back               K2 — open menu
       running (non-interruptible except K1):
         K1 tap  — abort early and go straight to the results screen
         other keys ignored while a run is in progress
       results (scrollable summary; full detail is in the log file under
-      config.STRESS_LOG_DIR):
+      config.STRESS_LOG_DIR; only metrics for phases that ran are shown):
         up/down — scroll             K1 — back      K2 — open menu
 
     Confirm dialogs:

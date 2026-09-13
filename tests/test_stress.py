@@ -140,29 +140,77 @@ def test_simulate_activity_cleans_up_fallback_temp_file(app, monkeypatch):
 
 # ---- run() orchestration -------------------------------------------------
 
-def test_run_writes_log_and_returns_summary(app, tmp_path):
+def test_run_both_writes_log_and_returns_summary(app, tmp_path):
     a = app()
     log_path = str(tmp_path / "stress" / "run.log")
-    result = stress.run(a, 0.1, log_path)
+    result = stress.run(a, log_path, "both", phase_secs=0.1)
 
     assert os.path.exists(log_path)
     content = open(log_path).read()
+    assert "mode: both" in content
     assert "CPU bench" in content
     assert "Activity simulation" in content
     assert "Samples" in content
 
-    for key in ("aborted", "elapsed", "cpu_ops_per_sec", "words_per_sec",
+    for key in ("mode", "aborted", "elapsed", "cpu_ops_per_sec", "words_per_sec",
                 "list_frames_per_sec", "paused_frames_per_sec",
                 "temp_start", "temp_end", "temp_min", "temp_max", "temp_avg",
                 "throttled", "log_path"):
         assert key in result
+    assert result["mode"] == "both"
     assert result["aborted"] is False
+    assert result["cpu_ops_per_sec"] is not None
+    assert result["words_per_sec"] is not None
     assert result["log_path"] == log_path
+
+
+def test_run_cpu_only_omits_activity(app, tmp_path):
+    a = app()
+    log_path = str(tmp_path / "stress" / "cpu.log")
+    result = stress.run(a, log_path, "cpu", phase_secs=0.05)
+
+    content = open(log_path).read()
+    assert "mode: cpu" in content
+    assert "CPU bench" in content
+    assert "Activity simulation" not in content
+
+    assert result["mode"] == "cpu"
+    assert result["cpu_ops_per_sec"] is not None
+    assert result["words_per_sec"] is None
+    assert result["list_frames_per_sec"] is None
+    assert result["paused_frames_per_sec"] is None
+
+
+def test_run_rsvp_only_omits_cpu(app, tmp_path):
+    a = app()
+    log_path = str(tmp_path / "stress" / "rsvp.log")
+    result = stress.run(a, log_path, "rsvp", phase_secs=0.05)
+
+    content = open(log_path).read()
+    assert "mode: rsvp" in content
+    assert "Activity simulation" in content
+    assert "CPU bench" not in content
+
+    assert result["mode"] == "rsvp"
+    assert result["cpu_ops_per_sec"] is None
+    assert result["words_per_sec"] is not None
+    assert result["list_frames_per_sec"] is not None
+    assert result["paused_frames_per_sec"] is not None
 
 
 def test_run_marks_aborted_when_should_abort_fires_immediately(app, tmp_path):
     a = app()
     log_path = str(tmp_path / "stress" / "run.log")
-    result = stress.run(a, 60, log_path, should_abort=lambda: True)
+    result = stress.run(a, log_path, "both", phase_secs=60,
+                        should_abort=lambda: True)
     assert result["aborted"] is True
     assert result["elapsed"] < 5.0
+    # Aborted during CPU, so activity never ran.
+    assert result["cpu_ops_per_sec"] is not None
+    assert result["words_per_sec"] is None
+
+
+def test_run_rejects_unknown_mode(app, tmp_path):
+    a = app()
+    with pytest.raises(ValueError, match="unknown stress mode"):
+        stress.run(a, str(tmp_path / "x.log"), "nope", phase_secs=0.01)

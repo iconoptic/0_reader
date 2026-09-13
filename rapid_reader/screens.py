@@ -697,14 +697,17 @@ class ScreenTestScreen(Screen):
 
 
 class StressTestScreen(Screen):
-    """CPU + rendering-pipeline stress test, for comparing thermal
+    """CPU and/or rendering-pipeline stress test, for comparing thermal
     hardware (e.g. two candidate heatsinks) by their effect on sustained
-    temperature/throttling. Three phases: pick a duration ("ready"), run
+    temperature/throttling. Three phases: pick a mode ("ready"), run
     it ("running" -- see _run() for why this blocks synchronously instead
     of using OtaScreen's tick()-based approach), then show a scrollable
     results summary ("results"). Verbose per-second samples go to a log
     file under config.STRESS_LOG_DIR; this screen only shows the
-    condensed summary."""
+    condensed summary. Modes: RSVP only (~Ts), CPU only (~Ts), or both
+    (~2Ts), with Ts = config.STRESS_TS_SECS."""
+
+    _MODE_LABELS = {"rsvp": "RSVP", "cpu": "CPU", "both": "Both"}
 
     def __init__(self):
         self._phase = "ready"   # ready -> running -> results
@@ -716,7 +719,7 @@ class StressTestScreen(Screen):
 
     def frame(self, app):
         if self._phase == "ready":
-            rows = [label for label, _ in config.STRESS_DURATIONS]
+            rows = [label for label, _ in config.STRESS_MODES]
             return render.list_frame("STRESS TEST", rows, self._sel, self._top,
                                       rows_visible=4,
                                       footer="press: start   k1: back")
@@ -735,7 +738,7 @@ class StressTestScreen(Screen):
 
     def _handle_ready(self, app, event):
         name, kind = event
-        n = len(config.STRESS_DURATIONS)
+        n = len(config.STRESS_MODES)
         if name in ("up", "down") and kind in ("tap", "repeat"):
             delta = -1 if name == "up" else 1
             self._sel = (self._sel + delta) % n
@@ -762,7 +765,7 @@ class StressTestScreen(Screen):
     def _run(self, app):
         import os
         import queue
-        _, duration = config.STRESS_DURATIONS[self._sel]
+        _, mode = config.STRESS_MODES[self._sel]
         self._phase = "running"
         self._progress, self._label = 0.0, "Starting..."
         app.redraw()
@@ -785,29 +788,34 @@ class StressTestScreen(Screen):
 
         log_name = "stress-%s.log" % time.strftime("%Y%m%d-%H%M%S")
         log_path = os.path.join(config.STRESS_LOG_DIR, log_name)
-        result = stress.run(app, duration, log_path,
+        result = stress.run(app, log_path, mode,
                              on_progress=on_progress, should_abort=should_abort)
         self._result_rows = self._format_results(result)
         self._top = 0
         self._phase = "results"
         app.redraw()
 
-    @staticmethod
-    def _format_results(r):
+    @classmethod
+    def _format_results(cls, r):
         def fmt_temp(t):
             return "%.1f C" % t if t is not None else "n/a"
         rows = [
+            "Mode: %s" % cls._MODE_LABELS.get(r["mode"], r["mode"]),
             "Aborted: %s" % ("yes" if r["aborted"] else "no"),
             "Elapsed: %s" % render.fmt_duration_hms(r["elapsed"]),
-            "CPU: %.0f ops/s" % r["cpu_ops_per_sec"],
-            "RSVP: %.0f words/s" % r["words_per_sec"],
-            "List: %.0f frames/s" % r["list_frames_per_sec"],
-            "Paused: %.0f frames/s" % r["paused_frames_per_sec"],
+        ]
+        if r["cpu_ops_per_sec"] is not None:
+            rows.append("CPU: %.0f ops/s" % r["cpu_ops_per_sec"])
+        if r["words_per_sec"] is not None:
+            rows.append("RSVP: %.0f words/s" % r["words_per_sec"])
+            rows.append("List: %.0f frames/s" % r["list_frames_per_sec"])
+            rows.append("Paused: %.0f frames/s" % r["paused_frames_per_sec"])
+        rows.extend([
             "Temp start: %s" % fmt_temp(r["temp_start"]),
             "Temp avg: %s" % fmt_temp(r["temp_avg"]),
             "Temp peak: %s" % fmt_temp(r["temp_max"]),
             "Temp end: %s" % fmt_temp(r["temp_end"]),
-        ]
+        ])
         throttled = r["throttled"]
         if throttled is None:
             rows.append("Throttle: unavailable")
