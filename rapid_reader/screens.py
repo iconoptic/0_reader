@@ -1,10 +1,12 @@
 """Every Screen in the navigation stack. No hardware; calls render.py."""
 
+import os
 import time
 
 import books
 import config
 import render
+import stress
 import theme
 from contracts import Screen
 
@@ -15,13 +17,18 @@ class ListScreen(Screen):
     K3=context action if implemented, up/down move selection (with
     wraparound), left/right page by rows_visible. Subclasses override
     items(), header(), row_text(), activate(), and optionally
-    context_action()."""
+    context_action().
+
+    Truncated selected rows marquee left after TITLE_SCROLL_DELAY_SECS
+    (see tick / poll_timeout)."""
 
     rows_visible = 4
 
     def __init__(self):
         self.sel = 0
         self.top = 0
+        self._sel_since = time.monotonic()
+        self._marquee_px = 0
 
     def items(self, app):
         raise NotImplementedError
@@ -41,16 +48,75 @@ class ListScreen(Screen):
     def context_action(self, app, item):
         pass  # no-op by default; screens with a K3 action override this
 
+    def _reset_marquee(self):
+        self._sel_since = time.monotonic()
+        self._marquee_px = 0
+
     def on_enter(self, app):
         self.sel = min(self.sel, max(0, len(self.items(app)) - 1))
         self._scroll_into_view()
+        self._reset_marquee()
 
     def frame(self, app):
         items = self.items(app)
         rows = [self.row_text(app, it) for it in items]
         return render.list_frame(self.header(app), rows, self.sel, self.top,
                                   rows_visible=self.rows_visible,
-                                  empty_lines=self.empty_lines(app))
+                                  empty_lines=self.empty_lines(app),
+                                  sel_offset=self._marquee_px)
+
+    def poll_timeout(self, app=None):
+        """Return seconds until the next marquee tick should fire.
+
+        Called from App.run with the app so we can measure the selected
+        row's overflow; without app (or with empty list) fall back to the
+        idle dwell timeout.
+        """
+        if self._marquee_px == 0:
+            return config.TITLE_SCROLL_DELAY_SECS
+        if app is not None:
+            items = self.items(app)
+            if items and 0 <= self.sel < len(items):
+                overflow = render.list_row_overflow(
+                    self.row_text(app, items[self.sel]))
+                if self._marquee_px >= overflow:
+                    return config.TITLE_SCROLL_DELAY_SECS
+        return config.TITLE_SCROLL_TICK_SECS
+
+    def tick(self, app):
+        items = self.items(app)
+        if not items or self.sel < 0 or self.sel >= len(items):
+            return
+        label = self.row_text(app, items[self.sel])
+        overflow = render.list_row_overflow(label)
+        if overflow <= 0:
+            if self._marquee_px:
+                self._marquee_px = 0
+                app.redraw()
+            return
+        now = time.monotonic()
+        if self._marquee_px >= overflow:
+            # End pause: snap back after TITLE_SCROLL_DELAY_SECS from when
+            # we first reached the end (stored by bumping _sel_since).
+            if now - self._sel_since < config.TITLE_SCROLL_DELAY_SECS:
+                return
+            self._marquee_px = 0
+            self._sel_since = now
+            app.redraw()
+            return
+        if self._marquee_px == 0:
+            if now - self._sel_since < config.TITLE_SCROLL_DELAY_SECS:
+                return
+            self._marquee_px = min(config.TITLE_SCROLL_STEP_PX, overflow)
+            if self._marquee_px >= overflow:
+                self._sel_since = now  # start end-pause clock
+            app.redraw()
+            return
+        self._marquee_px = min(
+            self._marquee_px + config.TITLE_SCROLL_STEP_PX, overflow)
+        if self._marquee_px >= overflow:
+            self._sel_since = now  # start end-pause clock
+        app.redraw()
 
     def handle(self, app, event):
         name, kind = event
@@ -59,11 +125,13 @@ class ListScreen(Screen):
             delta = -1 if name == "up" else 1
             self.sel = (self.sel + delta) % len(items)
             self._scroll_into_view()
+            self._reset_marquee()
             app.redraw()
         elif name in ("left", "right") and kind in ("tap", "repeat") and items:
             delta = -self.rows_visible if name == "left" else self.rows_visible
             self.sel = max(0, min(len(items) - 1, self.sel + delta))
             self._scroll_into_view()
+            self._reset_marquee()
             app.redraw()
         elif name == "press" and kind == "tap" and items:
             self.activate(app, items[self.sel])
@@ -82,35 +150,57 @@ class ListScreen(Screen):
 
 
 class LibraryScreen(ListScreen):
-    """Root of the stack. K1 tap is a no-op (App.pop() refuses to pop the
-    last item). K1 hold = power-off confirm; K2 = menu (Settings/System);
-    K3 opens BookInfoScreen for the selected book."""
+    """Browse one directory under BOOKS_DIR. Root (BOOKS_DIR) stays at
+    stack[0]: K1 tap is a no-op there (App.pop refuses to pop the last
+    item); K1 hold = power-off confirm. Nested folder screens pop on K1.
+    Press opens a folder submenu or a book; K3 opens BookInfoScreen for
+    books only."""
+
+    def __init__(self, directory=None):
+        super().__init__()
+        self.directory = directory or config.BOOKS_DIR
 
     def items(self, app):
-        return books.sort_by_recency(
-            books.scan_library(),
+        entries = books.scan_dir(self.directory)
+        folders = [e for e in entries if e[0] == "folder"]
+        book_pairs = [(title, path) for kind, title, path in entries
+                      if kind == "book"]
+        sorted_books = books.sort_by_recency(
+            book_pairs,
             {p: rec["last_opened"] for p, rec in app.state.books.items()})
+        books_out = [("book", title, path) for title, path in sorted_books]
+        return folders + books_out
 
     def header(self, app):
-        return "LIBRARY"
+        if self.directory == config.BOOKS_DIR:
+            return "LIBRARY"
+        return os.path.basename(self.directory)
 
     def row_text(self, app, item):
-        return item[0]  # title
+        kind, title, _path = item
+        return title + "/" if kind == "folder" else title
 
     def empty_lines(self, app):
-        return ("No books found.", "Copy .txt/.epub to", config.BOOKS_DIR)
+        if self.directory == config.BOOKS_DIR:
+            return ("No books found.", "Copy .txt/.epub to", config.BOOKS_DIR)
+        return ("Empty folder.",)
 
     def activate(self, app, item):
-        _, path = item
-        app.open_book(path)
+        kind, _title, path = item
+        if kind == "folder":
+            app.push(LibraryScreen(path))
+        else:
+            app.open_book(path)
 
     def context_action(self, app, item):
-        title, path = item
-        app.push(BookInfoScreen(title, path))
+        kind, title, path = item
+        if kind == "book":
+            app.push(BookInfoScreen(title, path))
 
     def handle(self, app, event):
         name, kind = event
-        if name == "k1" and kind == "hold":
+        if (name == "k1" and kind == "hold"
+                and self.directory == config.BOOKS_DIR):
             app.push(ConfirmScreen("Power off?", self._power_off))
             return
         super().handle(app, event)
@@ -452,8 +542,7 @@ class DisplaySettingsScreen(Screen):
 
 
 class SystemScreen(ListScreen):
-    _ITEMS = ("IP address", "Disk free", "Version", "Screen test",
-              "Reboot", "Power off")
+    _ITEMS = ("Info", "Diagnostics", "Power")
 
     def items(self, app):
         return list(self._ITEMS)
@@ -462,19 +551,12 @@ class SystemScreen(ListScreen):
         return "SYSTEM"
 
     def activate(self, app, item):
-        import config
-        if item == "IP address":
-            app.push(MessageScreen([self._ip_address()]))
-        elif item == "Disk free":
-            app.push(MessageScreen([self._disk_free(config.BOOKS_DIR)]))
-        elif item == "Version":
-            app.push(MessageScreen([getattr(config, "VERSION", "dev")]))
-        elif item == "Screen test":
-            app.push(ScreenTestScreen())
-        elif item == "Reboot":
-            app.push(ConfirmScreen("Reboot now?", self._reboot))
-        elif item == "Power off":
-            app.push(ConfirmScreen("Power off now?", self._power_off))
+        if item == "Info":
+            app.push(SystemInfoScreen())
+        elif item == "Diagnostics":
+            app.push(DiagnosticsScreen())
+        elif item == "Power":
+            app.push(PowerScreen())
 
     @staticmethod
     def _ip_address():
@@ -510,6 +592,57 @@ class SystemScreen(ListScreen):
         import subprocess
         argv = [cmd] if os.geteuid() == 0 else ["sudo", "-n", cmd]
         subprocess.call(argv)
+
+
+class SystemInfoScreen(ListScreen):
+    _ITEMS = ("IP address", "Disk free", "Version")
+
+    def items(self, app):
+        return list(self._ITEMS)
+
+    def header(self, app):
+        return "INFO"
+
+    def activate(self, app, item):
+        import config
+        if item == "IP address":
+            app.push(MessageScreen([SystemScreen._ip_address()]))
+        elif item == "Disk free":
+            app.push(MessageScreen([SystemScreen._disk_free(config.BOOKS_DIR)]))
+        elif item == "Version":
+            app.push(MessageScreen([getattr(config, "VERSION", "dev")]))
+
+
+class DiagnosticsScreen(ListScreen):
+    _ITEMS = ("Screen test", "Stress test")
+
+    def items(self, app):
+        return list(self._ITEMS)
+
+    def header(self, app):
+        return "DIAGNOSTICS"
+
+    def activate(self, app, item):
+        if item == "Screen test":
+            app.push(ScreenTestScreen())
+        elif item == "Stress test":
+            app.push(StressTestScreen())
+
+
+class PowerScreen(ListScreen):
+    _ITEMS = ("Reboot", "Power off")
+
+    def items(self, app):
+        return list(self._ITEMS)
+
+    def header(self, app):
+        return "POWER"
+
+    def activate(self, app, item):
+        if item == "Reboot":
+            app.push(ConfirmScreen("Reboot now?", SystemScreen._reboot))
+        elif item == "Power off":
+            app.push(ConfirmScreen("Power off now?", SystemScreen._power_off))
 
 
 class ScreenTestScreen(Screen):
@@ -562,6 +695,127 @@ class ScreenTestScreen(Screen):
             self._mode = (self._mode + 1) % len(self._MODES)
             app.redraw()
 
+
+class StressTestScreen(Screen):
+    """CPU + rendering-pipeline stress test, for comparing thermal
+    hardware (e.g. two candidate heatsinks) by their effect on sustained
+    temperature/throttling. Three phases: pick a duration ("ready"), run
+    it ("running" -- see _run() for why this blocks synchronously instead
+    of using OtaScreen's tick()-based approach), then show a scrollable
+    results summary ("results"). Verbose per-second samples go to a log
+    file under config.STRESS_LOG_DIR; this screen only shows the
+    condensed summary."""
+
+    def __init__(self):
+        self._phase = "ready"   # ready -> running -> results
+        self._sel = 0
+        self._top = 0
+        self._progress = 0.0
+        self._label = ""
+        self._result_rows = []
+
+    def frame(self, app):
+        if self._phase == "ready":
+            rows = [label for label, _ in config.STRESS_DURATIONS]
+            return render.list_frame("STRESS TEST", rows, self._sel, self._top,
+                                      rows_visible=4,
+                                      footer="press: start   k1: back")
+        if self._phase == "running":
+            return render.progress_frame(self._progress, self._label)
+        return render.list_frame("RESULTS", self._result_rows, -1, self._top,
+                                  rows_visible=4, footer="k1: back")
+
+    def handle(self, app, event):
+        if self._phase == "ready":
+            self._handle_ready(app, event)
+        elif self._phase == "results":
+            self._handle_results(app, event)
+        # "running" swallows input here; _run() drains app.events itself
+        # to detect a K1 abort while the test is in progress.
+
+    def _handle_ready(self, app, event):
+        name, kind = event
+        n = len(config.STRESS_DURATIONS)
+        if name in ("up", "down") and kind in ("tap", "repeat"):
+            delta = -1 if name == "up" else 1
+            self._sel = (self._sel + delta) % n
+            app.redraw()
+        elif name == "press" and kind == "tap":
+            self._run(app)
+        elif name == "k1" and kind == "tap":
+            app.pop()
+        elif name == "k2" and kind == "tap":
+            app.push(BookMenuScreen())
+
+    def _handle_results(self, app, event):
+        name, kind = event
+        if name in ("up", "down") and kind in ("tap", "repeat"):
+            delta = -1 if name == "up" else 1
+            max_top = max(0, len(self._result_rows) - 4)
+            self._top = max(0, min(max_top, self._top + delta))
+            app.redraw()
+        elif name == "k1" and kind == "tap":
+            app.pop()
+        elif name == "k2" and kind == "tap":
+            app.push(BookMenuScreen())
+
+    def _run(self, app):
+        import os
+        import queue
+        _, duration = config.STRESS_DURATIONS[self._sel]
+        self._phase = "running"
+        self._progress, self._label = 0.0, "Starting..."
+        app.redraw()
+
+        def on_progress(phase_key, fraction, label_text):
+            self._progress, self._label = fraction, label_text
+            app.redraw()
+
+        aborted = [False]
+
+        def should_abort():
+            try:
+                while True:
+                    ev_name, ev_kind = app.events.get_nowait()
+                    if ev_name == "k1" and ev_kind == "tap":
+                        aborted[0] = True
+            except queue.Empty:
+                pass
+            return aborted[0]
+
+        log_name = "stress-%s.log" % time.strftime("%Y%m%d-%H%M%S")
+        log_path = os.path.join(config.STRESS_LOG_DIR, log_name)
+        result = stress.run(app, duration, log_path,
+                             on_progress=on_progress, should_abort=should_abort)
+        self._result_rows = self._format_results(result)
+        self._top = 0
+        self._phase = "results"
+        app.redraw()
+
+    @staticmethod
+    def _format_results(r):
+        def fmt_temp(t):
+            return "%.1f C" % t if t is not None else "n/a"
+        rows = [
+            "Aborted: %s" % ("yes" if r["aborted"] else "no"),
+            "Elapsed: %s" % render.fmt_duration_hms(r["elapsed"]),
+            "CPU: %.0f ops/s" % r["cpu_ops_per_sec"],
+            "RSVP: %.0f words/s" % r["words_per_sec"],
+            "List: %.0f frames/s" % r["list_frames_per_sec"],
+            "Paused: %.0f frames/s" % r["paused_frames_per_sec"],
+            "Temp start: %s" % fmt_temp(r["temp_start"]),
+            "Temp avg: %s" % fmt_temp(r["temp_avg"]),
+            "Temp peak: %s" % fmt_temp(r["temp_max"]),
+            "Temp end: %s" % fmt_temp(r["temp_end"]),
+        ]
+        throttled = r["throttled"]
+        if throttled is None:
+            rows.append("Throttle: unavailable")
+        else:
+            flags = [k for k, v in throttled.items() if v]
+            rows.append("Throttle: %s" % (", ".join(flags) if flags else "none"))
+        rows.append("Log: %s" % r["log_path"])
+        return rows
 
 
 # Stage names the helper writes to config.OTA_PROGRESS ("<n>/<total>

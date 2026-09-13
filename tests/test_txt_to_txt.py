@@ -160,3 +160,23 @@ def test_second_run_does_not_clobber_backup(tmp_path):
 
     backup = tmp_path / "book.txt.orig"
     assert backup.read_text(encoding="utf-8") == original
+
+
+def test_process_file_no_backup(tmp_path):
+    p = tmp_path / "book.txt"
+    original = "word pro-\ncessing here.\n"
+    p.write_text(original, encoding="utf-8")
+
+    txt_to_txt.process_file(str(p), backup=False)
+
+    assert not (tmp_path / "book.txt.orig").exists()
+    assert p.read_text(encoding="utf-8") == "word processing here.\n"
+
+
+def test_cli_no_backup(tmp_path):
+    p = tmp_path / "book.txt"
+    p.write_text("word pro-\ncessing here.\n", encoding="utf-8")
+
+    assert txt_to_txt.main(["--no-backup", str(p)]) == 0
+    assert not (tmp_path / "book.txt.orig").exists()
+    assert p.read_text(encoding="utf-8") == "word processing here.\n"

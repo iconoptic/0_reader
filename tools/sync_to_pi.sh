@@ -22,7 +22,7 @@
 # sudoers rule, so --bootstrap is not part of the normal workflow.
 #
 # Before every ebooks/ sync, tools/txt_to_txt.py is run locally over
-# ebooks/*.txt (RSVP cleanup, in place — see README.md). It's idempotent
+# ebooks/**/*.txt (RSVP cleanup, in place — see README.md). It's idempotent
 # and backs up each file to <name>.txt.orig the first time it touches
 # it, so re-running sync repeatedly is safe. --no-convert skips this if
 # you want to push books as-is. The .orig backups themselves are never
@@ -138,6 +138,7 @@ Could not obtain root on the Pi. To install the helper by hand:
   printf '%s\\n' '$SUDOERS_LINE' | sudo tee /tmp/rr-sudoers >/dev/null
   sudo visudo -cf /tmp/rr-sudoers
   sudo install -m 440 -o root -g root /tmp/rr-sudoers $SUDOERS_REMOTE
+  sudo install -d -m 755 -o reader -g reader $OTA_REMOTE
   sudo install -d -m 755 -o reader -g reader $INCOMING_REMOTE
 
 Then re-run: tools/sync_to_pi.sh
@@ -195,6 +196,12 @@ fi
 install -m 440 -o root -g root "\$tmp" '$SUDOERS_REMOTE'
 echo "  installed $SUDOERS_REMOTE"
 
+# install -d only chowns the final directory it's given, not any missing
+# parents it creates along the way (those inherit root's default owner
+# here) — so ota/ needs its own explicit install -d alongside incoming/,
+# or the manifest (written directly into ota/, a sibling of incoming/)
+# ends up unwritable by reader.
+install -d -m 755 -o reader -g reader '$OTA_REMOTE'
 install -d -m 755 -o reader -g reader '$INCOMING_REMOTE'
 rm -f /tmp/rapid-reader-ota-apply
 EOF
@@ -335,7 +342,7 @@ fi
 if [[ $SYNC_EBOOKS -eq 1 ]]; then
     if [[ -d $HERE/ebooks ]]; then
         if [[ $CONVERT -eq 1 ]]; then
-            log "txt_to_txt.py: RSVP cleanup of ebooks/*.txt (in place)"
+            log "txt_to_txt.py: RSVP cleanup of ebooks/ (in place)"
             python3 "$HERE/tools/txt_to_txt.py"
         fi
         log "rsync ebooks/ → $PI_SSH:$BOOKS_REMOTE/"

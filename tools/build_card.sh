@@ -182,6 +182,13 @@ fi
 printf 'reader ALL=(root) NOPASSWD: /usr/sbin/poweroff, /usr/sbin/reboot, /usr/local/sbin/rapid-reader-ota-apply\n' > "$ROOT/etc/sudoers.d/010_rapid-reader"
 chmod 440 "$ROOT/etc/sudoers.d/010_rapid-reader"
 install -m 755 "$HERE/system/rapid-reader-ota-apply" "$ROOT/usr/local/sbin/rapid-reader-ota-apply"
+# install -d only chowns the final path component it's given, not any
+# missing parents it creates along the way (those get default/root
+# ownership) — so ota/ itself needs its own explicit install -d, or the
+# manifest (a sibling of incoming/, written directly into ota/ by host
+# sync) ends up unwritable by reader.
+install -d -m 755 -o 1000 -g 1000 "$ROOT/var/lib/rapid-reader"
+install -d -m 755 -o 1000 -g 1000 "$ROOT/var/lib/rapid-reader/ota"
 install -d -m 755 -o 1000 -g 1000 "$ROOT/var/lib/rapid-reader/ota/incoming"
 
 # ---------------------------------------------------------------- system
@@ -284,9 +291,11 @@ install -m 644 "$HERE/system/rapid-reader.service" "$ROOT/etc/systemd/system/rap
 inchroot systemctl enable rapid-reader.service
 
 install -d -o 1000 -g 1000 "$ROOT/home/reader/ebooks"
-cp -n "$HERE"/ebooks/* "$ROOT/home/reader/ebooks/"
+# Preserve subdirectory menus (rsync -a); -n/--ignore-existing keeps
+# salvaged copies from clobbering the host tree when both exist.
+rsync -a --ignore-existing "$HERE"/ebooks/ "$ROOT/home/reader/ebooks/"
 if [[ -n $SALVAGE && -d $SALVAGE/home/ebooks ]]; then
-    cp -n "$SALVAGE"/home/ebooks/* "$ROOT/home/reader/ebooks/" 2>/dev/null || true
+    rsync -a --ignore-existing "$SALVAGE"/home/ebooks/ "$ROOT/home/reader/ebooks/"
 fi
 chown -R 1000:1000 "$ROOT/home/reader"
 
@@ -321,7 +330,7 @@ echo "hostname: $(cat "$ROOT/etc/hostname")  user: $(inchroot id reader)"
 grep -q '^WirelessEnabled=true$' "$ROOT/var/lib/NetworkManager/NetworkManager.state" \
     || die "NetworkManager radio state not enabled -- wifi would stay soft-blocked"
 echo "wifi profiles: $(ls "$ROOT/etc/NetworkManager/system-connections" 2>/dev/null | wc -l)"
-echo "books: $(ls "$ROOT/home/reader/ebooks" | wc -l)"
+echo "books: $(find "$ROOT/home/reader/ebooks" -type f \( -name '*.txt' -o -name '*.epub' \) | wc -l)"
 
 log "finishing"
 rm -f "$ROOT/usr/bin/qemu-arm-static"

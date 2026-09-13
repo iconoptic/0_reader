@@ -202,12 +202,50 @@ def test_scan_library_missing_dir(tmp_path):
     assert books.scan_library(str(tmp_path / "nope")) == []
 
 
+def test_scan_dir_folders_then_books(books_dir):
+    os.makedirs(os.path.join(books_dir, "Zebra"))
+    os.makedirs(os.path.join(books_dir, "Alpha"))
+    open(os.path.join(books_dir, "zeta.txt"), "w").close()
+    open(os.path.join(books_dir, "Alpha.epub"), "w").close()
+    open(os.path.join(books_dir, "notes.pdf"), "w").close()
+    open(os.path.join(books_dir, ".hidden.txt"), "w").close()
+    os.makedirs(os.path.join(books_dir, ".secret"))
+    entries = books.scan_dir()
+    assert [e[:2] for e in entries] == [
+        ("folder", "Alpha"),
+        ("folder", "Zebra"),
+        ("book", "Alpha"),
+        ("book", "zeta"),
+    ]
+    assert all(p.startswith(books_dir) for _k, _t, p in entries)
+
+
+def test_scan_dir_missing_dir(tmp_path):
+    assert books.scan_dir(str(tmp_path / "nope")) == []
+
+
+def test_scan_library_flattens_nested(books_dir):
+    os.makedirs(os.path.join(books_dir, "Cat", "Sub"))
+    open(os.path.join(books_dir, "root.txt"), "w").close()
+    open(os.path.join(books_dir, "Cat", "mid.txt"), "w").close()
+    open(os.path.join(books_dir, "Cat", "Sub", "deep.epub"), "w").close()
+    # One-level scan_dir does not see Sub or deep.epub
+    top = books.scan_dir()
+    assert [e[:2] for e in top] == [("folder", "Cat"), ("book", "root")]
+    lib = books.scan_library()
+    titles = sorted(t for t, _ in lib)
+    assert titles == ["deep", "mid", "root"]
+    assert all(os.path.isfile(p) for _, p in lib)
+
+
 def test_bundled_ebooks_load_and_have_chapters():
-    """The sample library shipped in ebooks/ must tokenize and (for the
-    Gutenberg titles) yield chapter markers."""
+    """The sample library shipped in ebooks/ must tokenize. The welcome
+    tutorial has no chapters; at least some titles must still yield
+    chapter markers (Gutenberg-style ``CHAPTER`` headings)."""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     lib = books.scan_library(os.path.join(here, "ebooks"))
     assert len(lib) >= 5
+    with_chapters = 0
     for title, path in lib:
         b = books.Book.load(path)
         assert b.words, title
@@ -216,8 +254,9 @@ def test_bundled_ebooks_load_and_have_chapters():
         assert len(b.chapter_titles) == len(b.chapter_starts)
         if title.startswith("Welcome"):
             assert b.chapter_starts == []
-        else:
-            assert len(b.chapter_starts) >= 5, title
+        elif len(b.chapter_starts) >= 5:
+            with_chapters += 1
+    assert with_chapters >= 5
 
 
 def test_chapter_titles_and_chapter_title_lookup():

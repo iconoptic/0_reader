@@ -16,8 +16,9 @@ Requires: pip install -r tools/requirements.txt (wordninja, pyphen). If
 either is missing, that sub-pass is skipped with a warning.
 
 Usage:
-  python3 tools/txt_to_txt.py                  # all ebooks/*.txt, in place
+  python3 tools/txt_to_txt.py                  # all ebooks/**/*.txt, in place
   python3 tools/txt_to_txt.py path.txt ...
+  python3 tools/txt_to_txt.py --no-backup      # rewrite without <file>.orig
   python3 tools/txt_to_txt.py --min-split-len 9 --chunk-len 5 path.txt
 """
 
@@ -185,15 +186,17 @@ def process_text(
 def process_file(
     path: str, min_split_len: int = DEFAULT_MIN_SPLIT_LEN,
     chunk_len: int = DEFAULT_CHUNK_LEN, split_long_words: bool = True,
+    backup: bool = True,
 ) -> dict[str, int]:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         original = f.read()
     new_text, stats = process_text(original, min_split_len, chunk_len, split_long_words)
     if new_text != original:
-        backup = path + ".orig"
-        if not os.path.exists(backup):
-            with open(backup, "w", encoding="utf-8") as f:
-                f.write(original)
+        if backup:
+            backup_path = path + ".orig"
+            if not os.path.exists(backup_path):
+                with open(backup_path, "w", encoding="utf-8") as f:
+                    f.write(original)
         with open(path, "w", encoding="utf-8") as f:
             f.write(new_text)
     return stats
@@ -202,11 +205,13 @@ def process_file(
 def _default_txts() -> list[str]:
     if not os.path.isdir(DEFAULT_DIR):
         return []
-    return sorted(
-        os.path.join(DEFAULT_DIR, name)
-        for name in os.listdir(DEFAULT_DIR)
-        if name.lower().endswith(".txt") and not name.startswith(".")
-    )
+    out = []
+    for root, dirnames, filenames in os.walk(DEFAULT_DIR):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            if name.lower().endswith(".txt") and not name.startswith("."):
+                out.append(os.path.join(root, name))
+    return sorted(out)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -228,6 +233,10 @@ def main(argv: list[str] | None = None) -> int:
         "--no-long-word-split", action="store_true",
         help="skip the wordninja/pyphen long-word passes",
     )
+    parser.add_argument(
+        "--no-backup", action="store_true",
+        help="rewrite in place without writing <file>.orig",
+    )
     args = parser.parse_args(argv)
 
     paths = args.paths or _default_txts()
@@ -245,7 +254,10 @@ def main(argv: list[str] | None = None) -> int:
     for path in paths:
         if not os.path.isfile(path):
             sys.exit(f"not a file: {path}")
-        stats = process_file(path, args.min_split_len, args.chunk_len, split_long_words)
+        stats = process_file(
+            path, args.min_split_len, args.chunk_len, split_long_words,
+            backup=not args.no_backup,
+        )
         print(
             f"{path}: joins={stats['joins']} hyphen-splits={stats['hyphen_splits']} "
             f"concat-splits={stats['concat_splits']} chunk-splits={stats['chunk_splits']}"

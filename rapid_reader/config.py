@@ -39,7 +39,9 @@ HOLD_DELAY = 0.5     # how long a key must be held before "hold" (or the
 REPEAT_SECS = 0.12   # interval between "repeat" events while still held
 
 # --- Paths (unchanged from the LCD build) ---------------------------
-VERSION = "1.0.0-sh1106"
+# SemVer: 0.x = pre-OLED hardware (e-ink, then LCD HAT); 1.x = SH1106
+# appliance. Git tags (v0.1.0 …) mark the matching commits.
+VERSION = "1.2.2"
 BOOKS_DIR = "/home/reader/ebooks"
 STATE_DIR = "/var/lib/rapid-reader"
 STATE_FILE = STATE_DIR + "/state.json"
@@ -66,19 +68,31 @@ OTA_APPLY = "/usr/local/sbin/rapid-reader-ota-apply"
 # in-progress screen forever.
 OTA_TIMEOUT_SECS = 120.0
 
+# --- Stress test (System > Diagnostics) -------------------------------
+STRESS_LOG_DIR = STATE_DIR + "/stress"
+# (label, seconds) presets shown on the duration-picker screen.
+STRESS_DURATIONS = (("1 min", 60), ("5 min", 300), ("15 min", 900))
+# How often a temperature/throttle sample is recorded during a run;
+# independent of the (faster) progress-bar redraw cadence.
+STRESS_SAMPLE_SECS = 1.0
+
 # --- Reading ---------------------------------------------------------
 DEFAULT_WPM = 250
 MIN_WPM = 60
 MAX_WPM = 900
 WPM_STEP = 25
 SAVE_EVERY_WORDS = 100
-PANEL_REFRESH_SECS = 0.02   # SH1106 full frame ~5ms @ 4MHz; seed low
 
 # --- Idle / burn-in protection ---------------------------------------
 IDLE_DIM_SECS = 60      # no input for this long outside READING -> dim
 IDLE_OFF_SECS = 300     # no input for this long -> display off (sleep)
 IDLE_DIM_CONTRAST = 0x20
 IDLE_ACTIVE_CONTRAST = 0xCF
+
+# --- List title marquee (selected row overflow) ----------------------
+TITLE_SCROLL_DELAY_SECS = 1.0   # dwell before scroll starts / after end
+TITLE_SCROLL_STEP_PX = 2        # pixels left per tick while sliding
+TITLE_SCROLL_TICK_SECS = 0.05   # main-loop poll while sliding
 
 # --- Fonts -------------------------------------------------------------
 FONT_DIRS = ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/TTF",

@@ -32,13 +32,15 @@ Control map (Phase 1B / Phase 2)::
     Stable roles: K1 = Back/leave (hold on Library = power), K2 = Menu
     everywhere, K3 = Act (pause/resume, confirm-yes, list context).
 
-    Library (list of ListScreen):
+    Library (list of ListScreen; subdirs are folder menus):
       up/down     — move selection (repeats)
       left/right  — page by one screenful (repeats)
-      press       — open selected book
-      K1 hold     — power-off confirm
+      press       — open folder submenu or selected book
+      K1 hold     — power-off confirm (root BOOKS_DIR only)
       K2 tap      — main menu
-      K3 tap      — book info for the highlighted book
+      K3 tap      — book info for the highlighted book (books only)
+      After 1s with a truncated highlight, the selected row marquees
+      left until the end is visible, pauses, then snaps back.
 
     Reading:
       press or K3 tap — pause
@@ -51,13 +53,25 @@ Control map (Phase 1B / Phase 2)::
       same as Reading, plus left/right hold (repeat) — jump one chapter
       back/forward
 
-    Every list screen (chapters, bookmarks, settings, themes, system,
-    book menu):
+    Every list screen (chapters, bookmarks, settings, themes, system and
+    its Info/Diagnostics/Power submenus, book menu):
       K1    — back one level
       K2    — open menu (no-op when already on the menu)
       press — select/activate highlighted row
       K3    — context action where one exists (e.g. delete bookmark);
               otherwise no-op
+      Truncated highlighted rows marquee after 1s (same as Library).
+
+    Stress test (System > Diagnostics > Stress test):
+      ready screen (duration picker):
+        up/down — move selection      press — start the run
+        K1      — back               K2 — open menu
+      running (non-interruptible except K1):
+        K1 tap  — abort early and go straight to the results screen
+        other keys ignored while a run is in progress
+      results (scrollable summary; full detail is in the log file under
+      config.STRESS_LOG_DIR):
+        up/down — scroll             K1 — back      K2 — open menu
 
     Confirm dialogs:
       K3 tap — yes
@@ -131,3 +145,16 @@ class Screen:
         """Called once when this screen stops being the top of the stack
         (before a push on top of it, or when it is popped). Optional
         override; default does nothing."""
+
+    def poll_timeout(self, app=None):
+        """Seconds the main loop may block waiting for input before
+        calling ``tick``. Default 1.0 matches idle dim polling. List
+        screens override this to speed up while a selected title is
+        marquee-scrolling."""
+        return 1.0
+
+    def tick(self, app):
+        """Called on the main loop's idle timeout when the display is
+        not asleep. Default no-op; ListScreen uses this for title
+        marquee, OtaScreen for apply progress."""
+        pass

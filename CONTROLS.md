@@ -23,16 +23,21 @@ Stable key roles:
 
 ## Library
 
-Scrollable list of books in `~/ebooks`.
+Scrollable browse of `~/ebooks`. Subdirectories appear as folder menus
+(name followed by `/`); press opens the folder. Supported files
+(`.txt` / `.epub`) at any depth are books. Nested folders work the same
+way to any depth. If the highlighted name is truncated, it scrolls left
+after 1 s so the rest of the title is visible.
 
 | Input | Action |
 |-------|--------|
 | up / down (repeat) | move selection |
 | left / right (repeat) | page by one screenful |
-| press | open selected book (resumes last position) |
-| K1 hold | open power-off confirmation |
+| press | open selected folder or book (book resumes last position) |
+| K1 tap | back one folder (no-op at library root) |
+| K1 hold | open power-off confirmation (library root only) |
 | K2 tap | main menu |
-| K3 tap | book info for the highlighted book |
+| K3 tap | book info for the highlighted book (books only) |
 
 ## Reading (playing)
 
@@ -62,7 +67,8 @@ Chapter skip only works where a heading could be detected in the book
 ## List screens
 
 Chapters, bookmarks, settings, themes, system, and the book menu share
-the same skeleton:
+the same skeleton. Truncated highlighted rows scroll left after 1 s
+(same as Library).
 
 | Input | Action |
 |-------|--------|

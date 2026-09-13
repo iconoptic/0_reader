@@ -81,6 +81,12 @@ count_files() { # count_files DIR -> plain files directly in DIR, 0 if it does n
     echo "$n"
 }
 
+count_books() { # count_books DIR -> .txt/.epub anywhere under DIR (library tree)
+    local n
+    n=$(find "$1" -type f \( -name '*.txt' -o -name '*.epub' \) 2>/dev/null | wc -l) || n=0
+    echo "$n"
+}
+
 # ---------------------------------------------------------------- verify
 summarise_state() { # summarise_state FILE -> one line about the saved reading state
     python3 - "$1" <<'PY'
@@ -112,7 +118,7 @@ verify_backup() { # verify_backup DIR -- refuses to continue if the reading stat
         echo "  reading state : MISSING"
     fi
 
-    books=$(count_files "$dir/home/ebooks")
+    books=$(count_books "$dir/home/ebooks")
     wifi=$(count_files "$dir/nm")
     echo "  added books   : $books"
     echo "  wifi profiles : $wifi$([[ -s $dir/wifi.env ]] && echo " (+ wifi.env)")"
@@ -164,7 +170,7 @@ verify_card() { # verify_card DIR -- read the rebuilt card back and prove the da
             die "state.json on the card does not match the backup -- your progress did NOT restore (backup kept at $dir)"
         fi
     fi
-    echo "  books on card : $(count_files "$MNT/home/reader/ebooks")"
+    echo "  books on card : $(count_books "$MNT/home/reader/ebooks")"
     echo "  wifi profiles : $(count_files "$MNT/etc/NetworkManager/system-connections")"
     umount "$MNT"; rmdir "$MNT"; MNT=
 }

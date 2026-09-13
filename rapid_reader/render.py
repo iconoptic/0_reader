@@ -276,69 +276,50 @@ def _two_line_word(img, d, word, orp, theme):
     return img
 
 
-def _fit_chunk_orp(d, words, theme, word_size=None):
-    """Largest size where every word's ORP pieces fit on one line, or None."""
-    sizes = _WORD_SIZE_TIERS.get(word_size, _WORD_SIZE_TIERS["medium"])
-    for size in sizes:
-        reg = themes.font(theme, size)
-        bold = themes.font(theme, size, bold=True)
-        ch_fnt = reg if theme.pivot_style == "box" else bold
-        space_w = d.textlength(" ", font=reg)
-        parts = []
-        total = 0.0
-        for w in words:
-            orp = rsvp.orp_index(w)
-            pre, ch, post = w[:orp], w[orp], w[orp + 1:]
-            total += (d.textlength(pre, font=reg) + d.textlength(ch, font=ch_fnt)
-                      + d.textlength(post, font=reg))
-            parts.append((pre, ch, post))
-        total += space_w * (len(words) - 1)
-        if total <= W - 8:
-            return size, parts
-    return None
-
-
-def chunk_frame(words, theme, word_size=None):
-    """2+ words at once when wpm outpaces the frame rate."""
-    img, d = _canvas()
-    fitted = _fit_chunk_orp(d, words, theme, word_size)
-    if fitted is None:
-        text = " ".join(words)
-        sizes = _WORD_SIZE_TIERS.get(word_size, _WORD_SIZE_TIERS["medium"])
-        fnt = themes.font(theme, sizes[-1])
-        for size in sizes:
-            fnt = themes.font(theme, size)
-            if d.textlength(text, font=fnt) <= W - 8:
-                break
-        text = _ellipsize(d, text, fnt, W - 8)
-        x = (W - d.textlength(text, font=fnt)) / 2
-        d.text((x, CENTER_Y), text, font=fnt, fill=INK, anchor="lm")
-    else:
-        size, parts = fitted
-        reg = themes.font(theme, size)
-        bold = themes.font(theme, size, bold=True)
-        space_w = d.textlength(" ", font=reg)
-        ch_fnt = reg if theme.pivot_style == "box" else bold
-        total_w = sum(d.textlength(pre, font=reg) + d.textlength(ch, font=ch_fnt)
-                      + d.textlength(post, font=reg) for pre, ch, post in parts)
-        total_w += space_w * (len(parts) - 1)
-        x = (W - total_w) / 2
-        for pre, ch, post in parts:
-            x = _draw_orp_parts(d, theme, pre, ch, post, x, CENTER_Y, reg, bold)
-            x += space_w
-    return _finalize(img)
-
-
 # ---- list / info / paused --------------------------------------------
 
+_LIST_ROW_MAX_W = W - 16   # room for scroll triangles at right
+_LIST_ROW_H = 12
+
+
+def list_row_overflow(text):
+    """Pixels the full label extends past the list row text slot (W-16)."""
+    t = _default_theme()
+    row_f = themes.font(t, 10)
+    # textlength needs a Draw; use a throwaway 1x1 canvas
+    _, d = _canvas()
+    tw = int(d.textlength(text, font=row_f))
+    return max(0, tw - _LIST_ROW_MAX_W)
+
+
+def _draw_list_row_marquee(img, text, x, y, row_f, fill, offset):
+    """Draw full ``text`` shifted left by ``offset``, clipped to the row slot.
+
+    ``fill`` is the text colour (BG on the inverted selected band, INK
+    otherwise). The slot's background matches the row band so paste does
+    not punch holes outside the glyphs.
+    """
+    slot_w, slot_h = _LIST_ROW_MAX_W, _LIST_ROW_H
+    slot_bg = INK if fill == BG else BG
+    slot = Image.new("L", (slot_w, slot_h), slot_bg)
+    sd = ImageDraw.Draw(slot)
+    sd.text((-offset, 1), text, font=row_f, fill=fill)
+    img.paste(slot, (x, y))
+
+
 def list_frame(header, rows, sel, top, rows_visible=4, footer=None, note=None,
-               empty_lines=None):
-    """Generic scrollable list used by every list-shaped screen."""
+               empty_lines=None, sel_offset=0):
+    """Generic scrollable list used by every list-shaped screen.
+
+    ``sel_offset`` > 0 draws the selected row's full label (no ellipsis)
+    shifted left and clipped to the text slot; unselected rows stay
+    ellipsized. ``sel_offset`` == 0 keeps the static ellipsize path.
+    """
     img, d = _canvas()
     _header_band(d, header, note)
     t = _default_theme()
     row_f = themes.font(t, 10)
-    row_h = 12
+    row_h = _LIST_ROW_H
     y0 = 14
 
     if not rows:
@@ -352,11 +333,16 @@ def list_frame(header, rows, sel, top, rows_visible=4, footer=None, note=None,
 
     for i in range(top, min(top + rows_visible, len(rows))):
         y = y0 + (i - top) * row_h
-        label = _ellipsize(d, rows[i], row_f, W - 16)
         if i == sel:
             d.rectangle([0, y, W - 1, y + row_h - 1], fill=INK)
-            d.text((3, y + 1), label, font=row_f, fill=BG)
+            if sel_offset > 0:
+                _draw_list_row_marquee(
+                    img, rows[i], 3, y, row_f, BG, sel_offset)
+            else:
+                label = _ellipsize(d, rows[i], row_f, _LIST_ROW_MAX_W)
+                d.text((3, y + 1), label, font=row_f, fill=BG)
         else:
+            label = _ellipsize(d, rows[i], row_f, _LIST_ROW_MAX_W)
             d.text((3, y + 1), label, font=row_f, fill=INK)
 
     # scroll indicators (filled triangles at top-right / bottom-right)

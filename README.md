@@ -55,7 +55,7 @@ settings are saved per book automatically.
 | `tools/flash_ssh_wifi.sh` | Temporary SSH/wifi bring-up flash (stock image only; does **not** install the app) |
 | `datasheets/` | Datasheets for the Pi Zero W and the OLED HAT (see its README) |
 | `docs/` | Historical SH1106 overhaul phase briefs (see [docs/README.md](docs/README.md)) |
-| `ebooks/` | Sample library (public-domain Gutenberg texts + a welcome tutorial) |
+| `ebooks/` | Sample library organized into thematic subfolders (menus on device) plus a welcome tutorial at the root |
 | `tests/` | Hardware-free regression tests (`pytest`) |
 | `sdcard_build/` | Raspberry Pi OS Lite image used to build cards (not committed) |
 
@@ -146,10 +146,10 @@ list context).
 
 | Mode | Highlights |
 |------|------------|
-| Library | up/down select, left/right page, press open; K1 hold power-off; K2 main menu; K3 book info |
+| Library | up/down select, left/right page, press open; K1 hold power-off; K2 main menu; K3 book info; truncated highlight scrolls after 1s |
 | Reading | press/K3 pause; up/down wpm; left/right sentence; K1 → library; K2 book menu |
 | Paused | same as Reading, plus left/right hold = chapter jump |
-| Lists | press select; K1 back; K2 menu; K3 context action when available |
+| Lists | press select; K1 back; K2 menu; K3 context action when available; truncated highlight scrolls after 1s |
 | Confirm | K3 yes; K1 no |
 | Idle | dim then sleep; any key wakes (swallowed) |
 
@@ -166,13 +166,16 @@ style cycle in Settings; Display contrast is session-only (not in
 
 ## Adding books
 
-Drop `.txt` or `.epub` files into `/home/reader/ebooks`:
+Drop `.txt` or `.epub` files into `/home/reader/ebooks` (or any
+subdirectory — each folder is a library menu on the device):
 
 ```sh
 scp "My Book.epub" reader@rapidreader.local:ebooks/
+scp "My Book.epub" reader@rapidreader.local:ebooks/Fiction/
 ```
 
-Then rescan from the library (or just reboot).
+Then rescan from the library (or just reboot). Subdirectories appear as
+folder rows (`Name/`); press opens them. Files at any depth are books.
 
 ### Internet Archive PDFs
 
@@ -198,7 +201,7 @@ syllable-splitting whatever's still long). It backs up each original to
 
 ```sh
 pip install -r tools/requirements.txt   # wordninja, pyphen
-python3 tools/txt_to_txt.py             # all ebooks/*.txt, in place
+python3 tools/txt_to_txt.py             # all ebooks/**/*.txt, in place
 python3 tools/txt_to_txt.py book.txt    # or specific files
 ```
 

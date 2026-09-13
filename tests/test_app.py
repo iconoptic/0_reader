@@ -10,6 +10,7 @@ import pytest
 import books
 import config
 import main
+import render
 import screens
 
 
@@ -19,6 +20,9 @@ SAMPLE = ("CHAPTER I.\n\nFirst one. Second one here again today. Third!\n\n"
 
 def _write_book(name, text=SAMPLE):
     p = os.path.join(config.BOOKS_DIR, name)
+    parent = os.path.dirname(p)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(p, "w") as f:
         f.write(text)
     return p
@@ -137,7 +141,7 @@ def test_library_navigate_open_and_k1_noop(app):
     a = boot(app)
     lib = a.stack[-1]
     assert isinstance(lib, screens.LibraryScreen)
-    titles = [t for t, _ in lib.items(a)]
+    titles = [title for _kind, title, _path in lib.items(a)]
     assert titles == ["a", "b", "c", "d", "e"]
 
     fire(a, "down")
@@ -165,6 +169,43 @@ def test_library_navigate_open_and_k1_noop(app):
     assert len(a.stack) == 1
 
 
+def test_list_marquee_scrolls_after_dwell_and_resets_on_nav(app, monkeypatch):
+    long_name = "A Very Long Book Title That Definitely Overflows The Row"
+    _write_book(long_name + ".txt")
+    _write_book("short.txt")
+    a = boot(app)
+    lib = a.stack[-1]
+    items = lib.items(a)
+    # long title first alphabetically among these two stems? "A Very..." vs "short"
+    lib.sel = next(i for i, (_k, t, _p) in enumerate(items) if t.startswith("A Very"))
+    lib._reset_marquee()
+    assert render.list_row_overflow(lib.row_text(a, items[lib.sel])) > 0
+
+    # Before dwell: tick is a no-op
+    lib.tick(a)
+    assert lib._marquee_px == 0
+
+    # After dwell: offset advances
+    lib._sel_since = time.monotonic() - config.TITLE_SCROLL_DELAY_SECS - 0.01
+    lib.tick(a)
+    assert lib._marquee_px == config.TITLE_SCROLL_STEP_PX
+
+    lib.tick(a)
+    assert lib._marquee_px == 2 * config.TITLE_SCROLL_STEP_PX
+
+    # Moving selection resets
+    fire(a, "down")
+    assert lib._marquee_px == 0
+
+    # Short title never increments
+    lib.sel = next(i for i, (_k, t, _p) in enumerate(items) if t == "short")
+    lib._reset_marquee()
+    lib._sel_since = time.monotonic() - config.TITLE_SCROLL_DELAY_SECS - 0.01
+    lib.tick(a)
+    assert lib._marquee_px == 0
+    assert lib.poll_timeout(a) == config.TITLE_SCROLL_DELAY_SECS
+
+
 def test_library_opens_at_saved_position(app):
     path = _write_book("pos.txt")
     a = boot(app)
@@ -173,7 +214,7 @@ def test_library_opens_at_saved_position(app):
     # select pos.txt
     lib = a.stack[-1]
     items = lib.items(a)
-    lib.sel = next(i for i, (_, p) in enumerate(items) if p == path)
+    lib.sel = next(i for i, (_k, _t, p) in enumerate(items) if p == path)
     fire(a, "press")
     assert a.idx == 5
 
@@ -188,6 +229,92 @@ def test_library_k3_pushes_book_info(app):
     assert isinstance(a.stack[-1], screens.LibraryScreen)
 
 
+def test_library_browse_folder_and_open_nested_book(app, books_dir):
+    """Subdirs are menus: press folder pushes LibraryScreen; book opens."""
+    sub = os.path.join(books_dir, "Fiction")
+    os.makedirs(sub)
+    nested = _write_book(os.path.join("Fiction", "nested.txt"))
+    _write_book("root.txt")
+    a = boot(app)
+    lib = a.stack[-1]
+    items = lib.items(a)
+    assert [row_kind for row_kind, _t, _p in items] == ["folder", "book"]
+    assert lib.row_text(a, items[0]) == "Fiction/"
+    assert lib.row_text(a, items[1]) == "root"
+    lib.sel = 0
+    fire(a, "press")
+    assert len(a.stack) == 2
+    child = a.stack[-1]
+    assert isinstance(child, screens.LibraryScreen)
+    assert child.directory == sub
+    assert child.header(a) == "Fiction"
+    child_items = child.items(a)
+    assert len(child_items) == 1 and child_items[0][0] == "book"
+    fire(a, "press")
+    assert isinstance(a.stack[-1], screens.PausedScreen)
+    assert a.book.path == nested
+    fire(a, "k1")  # leave to library root
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+    assert len(a.stack) == 1
+
+
+def test_library_folder_k1_pops_to_parent(app, books_dir):
+    os.makedirs(os.path.join(books_dir, "SciFi"))
+    _write_book(os.path.join("SciFi", "x.txt"))
+    a = boot(app)
+    lib = a.stack[-1]
+    lib.sel = next(i for i, (k, _t, _p) in enumerate(lib.items(a))
+                   if k == "folder")
+    fire(a, "press")
+    assert len(a.stack) == 2
+    fire(a, "k1")
+    assert len(a.stack) == 1
+    assert a.stack[-1].directory == config.BOOKS_DIR
+
+
+def test_library_k3_on_folder_is_noop(app, books_dir):
+    os.makedirs(os.path.join(books_dir, "Emptyish"))
+    _write_book(os.path.join("Emptyish", "a.txt"))
+    a = boot(app)
+    lib = a.stack[-1]
+    lib.sel = 0  # folder first
+    fire(a, "k3")
+    assert isinstance(a.stack[-1], screens.LibraryScreen)
+    assert len(a.stack) == 1
+
+
+def test_library_k1_hold_power_only_at_root(app, books_dir):
+    os.makedirs(os.path.join(books_dir, "Cat"))
+    _write_book(os.path.join("Cat", "a.txt"))
+    a = boot(app)
+    lib = a.stack[-1]
+    lib.sel = 0
+    fire(a, "press")
+    child = a.stack[-1]
+    assert child.directory != config.BOOKS_DIR
+    fire(a, "k1", "hold")
+    # Nested: hold does not open power confirm (falls through; no-op for hold)
+    assert not isinstance(a.stack[-1], screens.ConfirmScreen)
+    fire(a, "k1")  # pop to root
+    fire(a, "k1", "hold")
+    assert isinstance(a.stack[-1], screens.ConfirmScreen)
+
+
+def test_boot_paused_with_nested_last_book(app, books_dir):
+    nested = _write_book(os.path.join("Deep", "resume.txt"))
+    a = app()
+    a.state.in_book = True
+    a.state.last_book = nested
+    a.state.touch_book(nested, position=2, total_words=10)
+    a.state.save()
+    a._boot_stack()
+    assert len(a.stack) == 2
+    assert isinstance(a.stack[0], screens.LibraryScreen)
+    assert isinstance(a.stack[-1], screens.PausedScreen)
+    assert a.book.path == nested
+    assert a.idx == 2
+
+
 # ---- reading / paused ---------------------------------------------------
 
 def _open_paused(app_factory, name="book.txt", text=SAMPLE):
@@ -200,7 +327,7 @@ def _open_paused(app_factory, name="book.txt", text=SAMPLE):
     a.push(screens.LibraryScreen())
     lib = a.stack[-1]
     items = lib.items(a)
-    lib.sel = next(i for i, (_, p) in enumerate(items) if p == path)
+    lib.sel = next(i for i, (_k, _t, p) in enumerate(items) if p == path)
     fire(a, "press")
     assert isinstance(a.stack[-1], screens.PausedScreen)
     return a
@@ -428,7 +555,7 @@ def test_book_info_screen_renders_and_k1_pops(app):
     a.state.save()
     lib = a.stack[-1]
     items = lib.items(a)
-    lib.sel = next(i for i, (_, p) in enumerate(items) if p == path)
+    lib.sel = next(i for i, (_k, _t, p) in enumerate(items) if p == path)
     fire(a, "k3")
     info = a.stack[-1]
     assert isinstance(info, screens.BookInfoScreen)
@@ -787,14 +914,40 @@ def test_display_settings_contrast_session_only(app):
     assert "contrast" not in a.state.settings
 
 
-def test_system_screen_info_and_power(app, tmp_path, monkeypatch):
-    a = _open_paused(app)
+def _open_system(a):
+    """Navigate Paused -> book menu -> System, returning the SystemScreen."""
     fire(a, "k2")
     menu = a.stack[-1]
     menu.sel = menu.items(a).index("System")
     fire(a, "press")
     sys_screen = a.stack[-1]
     assert isinstance(sys_screen, screens.SystemScreen)
+    return sys_screen
+
+
+def test_system_screen_nests_info_diagnostics_power(app):
+    a = _open_paused(app)
+    sys_screen = _open_system(a)
+    expected = {
+        "Info": screens.SystemInfoScreen,
+        "Diagnostics": screens.DiagnosticsScreen,
+        "Power": screens.PowerScreen,
+    }
+    for label, cls in expected.items():
+        sys_screen.sel = sys_screen.items(a).index(label)
+        fire(a, "press")
+        assert isinstance(a.stack[-1], cls)
+        fire(a, "k1")
+        assert isinstance(a.stack[-1], screens.SystemScreen)
+
+
+def test_system_info_screen(app, tmp_path):
+    a = _open_paused(app)
+    sys_screen = _open_system(a)
+    sys_screen.sel = sys_screen.items(a).index("Info")
+    fire(a, "press")
+    info_screen = a.stack[-1]
+    assert isinstance(info_screen, screens.SystemInfoScreen)
 
     # helpers don't raise
     ip = screens.SystemScreen._ip_address()
@@ -803,17 +956,26 @@ def test_system_screen_info_and_power(app, tmp_path, monkeypatch):
     assert "MB free" in disk
 
     for label in ("IP address", "Disk free", "Version"):
-        sys_screen.sel = sys_screen.items(a).index(label)
+        info_screen.sel = info_screen.items(a).index(label)
         fire(a, "press")
         assert isinstance(a.stack[-1], screens.MessageScreen)
         assert a.stack[-1].lines and a.stack[-1].lines[0]
         fire(a, "press")  # ignored; only K1 pops
         assert isinstance(a.stack[-1], screens.MessageScreen)
         fire(a, "k1")
-        assert isinstance(a.stack[-1], screens.SystemScreen)
+        assert isinstance(a.stack[-1], screens.SystemInfoScreen)
+
+
+def test_diagnostics_screen_test(app):
+    a = _open_paused(app)
+    sys_screen = _open_system(a)
+    sys_screen.sel = sys_screen.items(a).index("Diagnostics")
+    fire(a, "press")
+    diag_screen = a.stack[-1]
+    assert isinstance(diag_screen, screens.DiagnosticsScreen)
 
     # screen test: all-on → all-off → checkerboard → all-on; K1 back
-    sys_screen.sel = sys_screen.items(a).index("Screen test")
+    diag_screen.sel = diag_screen.items(a).index("Screen test")
     fire(a, "press")
     assert isinstance(a.stack[-1], screens.ScreenTestScreen)
     assert a.stack[-1]._mode == 0
@@ -825,34 +987,124 @@ def test_system_screen_info_and_power(app, tmp_path, monkeypatch):
     fire(a, "press")
     assert a.stack[-1]._mode == 0
     fire(a, "k1")
-    assert isinstance(a.stack[-1], screens.SystemScreen)
+    assert isinstance(a.stack[-1], screens.DiagnosticsScreen)
     assert a.display.panel.contrast_level == a.theme.contrast
 
-    # reboot / power off via confirm; monkeypatch subprocess
+
+def test_power_screen_reboot_and_poweroff(app, monkeypatch):
+    a = _open_paused(app)
+    sys_screen = _open_system(a)
+    sys_screen.sel = sys_screen.items(a).index("Power")
+    fire(a, "press")
+    power_screen = a.stack[-1]
+    assert isinstance(power_screen, screens.PowerScreen)
+
     calls = []
     monkeypatch.setattr(
         "subprocess.call",
         lambda argv: calls.append(list(argv)) or 0)
 
-    sys_screen.sel = sys_screen.items(a).index("Reboot")
+    power_screen.sel = power_screen.items(a).index("Reboot")
     fire(a, "press")
     assert isinstance(a.stack[-1], screens.ConfirmScreen)
     fire(a, "k1")  # decline
     assert calls == []
-    assert isinstance(a.stack[-1], screens.SystemScreen)
+    assert isinstance(a.stack[-1], screens.PowerScreen)
 
     fire(a, "press")
     fire(a, "k3")  # confirm reboot
     assert calls and calls[-1][-1] == "reboot"
 
     calls.clear()
-    sys_screen.sel = sys_screen.items(a).index("Power off")
+    power_screen.sel = power_screen.items(a).index("Power off")
     fire(a, "press")
     fire(a, "k1")  # decline
     assert calls == []
     fire(a, "press")
     fire(a, "k3")  # confirm poweroff
     assert calls and calls[-1][-1] == "poweroff"
+
+
+def _open_stress_test(a):
+    sys_screen = _open_system(a)
+    sys_screen.sel = sys_screen.items(a).index("Diagnostics")
+    fire(a, "press")
+    diag_screen = a.stack[-1]
+    diag_screen.sel = diag_screen.items(a).index("Stress test")
+    fire(a, "press")
+    stress_screen = a.stack[-1]
+    assert isinstance(stress_screen, screens.StressTestScreen)
+    return stress_screen
+
+
+def test_stress_test_duration_picker_shows_presets(app):
+    a = _open_paused(app)
+    stress_screen = _open_stress_test(a)
+    assert stress_screen._phase == "ready"
+    labels = [label for label, _ in config.STRESS_DURATIONS]
+    img = stress_screen.frame(a)
+    assert img.size == (config.OLED_W, config.OLED_H)
+    assert len(labels) >= 1
+
+    fire(a, "k1")
+    assert isinstance(a.stack[-1], screens.DiagnosticsScreen)
+
+
+def test_stress_test_full_run_produces_results(app, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STRESS_DURATIONS", (("quick", 0.05),))
+    monkeypatch.setattr(config, "STRESS_LOG_DIR", str(tmp_path / "stress"))
+    a = _open_paused(app)
+    stress_screen = _open_stress_test(a)
+
+    fire(a, "press")  # runs synchronously to completion
+    assert stress_screen._phase == "results"
+    assert any(row.startswith("Aborted: no") for row in stress_screen._result_rows)
+    assert any(row.startswith("Log: ") for row in stress_screen._result_rows)
+    log_path = next(row for row in stress_screen._result_rows
+                     if row.startswith("Log: "))[len("Log: "):]
+    assert os.path.exists(log_path)
+    assert log_path.startswith(config.STRESS_LOG_DIR)
+
+    img = stress_screen.frame(a)
+    assert img.size == (config.OLED_W, config.OLED_H)
+
+    fire(a, "k1")
+    assert isinstance(a.stack[-1], screens.DiagnosticsScreen)
+
+
+def test_stress_test_k1_aborts_mid_run(app, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STRESS_DURATIONS", (("long", 10.0),))
+    monkeypatch.setattr(config, "STRESS_LOG_DIR", str(tmp_path / "stress"))
+    a = _open_paused(app)
+    stress_screen = _open_stress_test(a)
+
+    a.events.put(("k1", "tap"))
+    t0 = time.monotonic()
+    fire(a, "press")
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 5.0  # aborted well before the full 10s
+    assert stress_screen._phase == "results"
+    assert any(row.startswith("Aborted: yes") for row in stress_screen._result_rows)
+
+
+def test_stress_test_results_scroll_within_bounds(app, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "STRESS_DURATIONS", (("quick", 0.05),))
+    monkeypatch.setattr(config, "STRESS_LOG_DIR", str(tmp_path / "stress"))
+    a = _open_paused(app)
+    stress_screen = _open_stress_test(a)
+    fire(a, "press")
+    assert stress_screen._phase == "results"
+    assert len(stress_screen._result_rows) > 4  # more rows than fit on screen
+
+    for _ in range(len(stress_screen._result_rows) + 5):
+        fire(a, "down")
+    max_top = len(stress_screen._result_rows) - 4
+    assert stress_screen._top == max_top
+
+    for _ in range(len(stress_screen._result_rows) + 5):
+        fire(a, "up")
+    assert stress_screen._top == 0
 
 
 class _FakeProc:

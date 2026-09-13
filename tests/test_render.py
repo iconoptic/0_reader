@@ -63,9 +63,9 @@ def _row_mostly(img, y0, y1, expect_ink):
 @pytest.mark.parametrize("fn,args", [
     (render.word_frame, ("hello", _night())),
     (render.word_frame, ("supercalifragilisticexpialidocious", _night())),
-    (render.chunk_frame, (["two", "words"], _night())),
     (render.list_frame, ("LIBRARY", ["A", "B"], 0, 0)),
     (render.list_frame, ("LIBRARY", [], 0, 0)),
+    (render.list_frame, ("RESULTS", ["A", "B", "C"], -1, 0)),
     (render.paused_frame, ("T", ["One", "two.", "Three."], 1, 0, 150, 0.2,
                            _night())),
     (render.info_frame, ("Title", ".epub", 100, 1000, 250, 3600)),
@@ -154,19 +154,6 @@ def test_word_frame_flash_badge():
         any(img.getpixel((x, 5)) == INK for x in range(W - 34, W - 2))
 
 
-def test_chunk_frame_keeps_orp_when_it_fits_else_plain():
-    th = _night(pivot_style="ticks")
-    d = render.ImageDraw.Draw(render.Image.new("L", (W, H), BG))
-    assert render._fit_chunk_orp(d, ["a", "b"], th) is not None
-    assert render._fit_chunk_orp(d, ["antidisestablishmentarianism"] * 6, th) is None
-    fitted = render.chunk_frame(["a", "b"], th)
-    plain = render.chunk_frame(["antidisestablishmentarianism"] * 6, th)
-    assert fitted.size == plain.size == (W, H)
-    assert list(fitted.get_flattened_data()) != list(plain.get_flattened_data())
-    large = render.chunk_frame(["a", "b"], th, word_size="large")
-    assert list(large.get_flattened_data()) != list(fitted.get_flattened_data())
-
-
 # ---- list_frame ------------------------------------------------------
 
 def test_list_frame_selection_inverted_and_scrolls():
@@ -198,6 +185,37 @@ def test_list_frame_empty_renders():
         "LIBRARY", [], 0, 0,
         empty_lines=("No books found.", "Copy .txt/.epub to", config.BOOKS_DIR))
     assert img.size == (W, H) and _has_ink(img)
+
+
+def test_list_row_overflow_and_marquee_clip():
+    short = "Short"
+    long = "A Very Long Book Title That Will Not Fit In One Row At All"
+    assert render.list_row_overflow(short) == 0
+    overflow = render.list_row_overflow(long)
+    assert overflow > 0
+
+    rows = [long, "Other"]
+    y0, row_h = 14, 12
+    # offset 0: ellipsized selected row (still inverted band)
+    img0 = render.list_frame("LIBRARY", rows, sel=0, top=0, sel_offset=0)
+    assert _row_mostly(img0, y0, y0 + row_h, expect_ink=True)
+
+    # two mid-scroll offsets must differ in the selected text band
+    mid = max(2, overflow // 3)
+    img_a = render.list_frame("LIBRARY", rows, sel=0, top=0, sel_offset=mid)
+    img_b = render.list_frame("LIBRARY", rows, sel=0, top=0,
+                              sel_offset=min(mid + 10, overflow))
+    assert list(img_a.get_flattened_data()) != list(img_b.get_flattened_data())
+
+    # Any BG pixel in the selected row past the text slot means marquee leaked
+    # into the scroll-triangle strip.
+    px = img_a.load()
+    leaked = any(
+        px[x, y] == BG
+        for y in range(y0 + 1, y0 + row_h - 1)
+        for x in range(3 + render._LIST_ROW_MAX_W, W - 1)
+    )
+    assert not leaked
 
 
 # ---- paused / helpers / theme ----------------------------------------

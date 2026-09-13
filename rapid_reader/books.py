@@ -255,15 +255,48 @@ def sort_by_recency(library, last_opened):
     return sorted(library, key=key)
 
 
+def scan_dir(directory=None):
+    """One-level listing for library browse menus.
+
+    Returns [("folder"|"book", title, path), ...] with folders first, then
+    books. Hidden names (leading ``.``) are skipped. Case-insensitive sort
+    within each kind. Missing directory yields ``[]``.
+    """
+    directory = directory or config.BOOKS_DIR
+    folders, books_out = [], []
+    try:
+        entries = list(os.scandir(directory))
+    except FileNotFoundError:
+        return []
+    for entry in sorted(entries, key=lambda e: e.name.lower()):
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            folders.append(("folder", entry.name, entry.path))
+        elif entry.is_file(follow_symlinks=False):
+            lower = entry.name.lower()
+            if lower.endswith(EXTENSIONS):
+                books_out.append(
+                    ("book", os.path.splitext(entry.name)[0], entry.path))
+    return folders + books_out
+
+
 def scan_library(directory=None):
-    """Return sorted list of (title, path) for supported files."""
+    """Return sorted list of (title, path) for all supported files under
+    ``directory`` (recursive). Missing directory yields ``[]``."""
     directory = directory or config.BOOKS_DIR
     out = []
     try:
-        for name in sorted(os.listdir(directory), key=str.lower):
-            if name.lower().endswith(EXTENSIONS) and not name.startswith("."):
-                out.append((os.path.splitext(name)[0],
-                            os.path.join(directory, name)))
+        for root, dirnames, filenames in os.walk(directory):
+            dirnames[:] = sorted(
+                (d for d in dirnames if not d.startswith(".")),
+                key=str.lower)
+            for name in sorted(filenames, key=str.lower):
+                if name.startswith("."):
+                    continue
+                if name.lower().endswith(EXTENSIONS):
+                    out.append((os.path.splitext(name)[0],
+                                os.path.join(root, name)))
     except FileNotFoundError:
         pass
     return out

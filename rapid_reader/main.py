@@ -6,11 +6,11 @@ paused, book menu, dialogs). Controls:
 
   Library:  up/down       move selection (repeats)
             left/right    page (repeats)
-            press         open book
-            K1 hold       power-off confirm
+            press         open folder or book
+            K1 hold       power-off confirm (root only)
             K2            menu (Settings / System)
-            K3            book info
-            K1 tap        no-op at root
+            K3            book info (books only)
+            K1 tap        back one folder (no-op at root)
 
   Reading:  press / K3    pause
             up/down       wpm +/- WPM_STEP
@@ -55,7 +55,6 @@ class App:
         self.idx = 0
         self.stack = []              # list[contracts.Screen]; stack[-1] is active
         self.words_since_save = 0
-        self.refresh_secs = config.PANEL_REFRESH_SECS
         self._last_input_at = time.monotonic()
         self._idle_state = "active"  # "active" | "dim" | "off"
         self._flash_text = None
@@ -276,28 +275,19 @@ class App:
 
     def step_word(self):
         words, para_ends = self.book.words, self.book.para_ends
-        start = self.idx
-        chunk = [words[start]]
+        idx = self.idx
         wpm = self.state.settings["wpm"]
-        total_delay = rsvp.word_delay(words[start], wpm, start in para_ends)
-        end = start
-        while total_delay < self.refresh_secs and end + 1 < len(words):
-            end += 1
-            chunk.append(words[end])
-            total_delay += rsvp.word_delay(words[end], wpm, end in para_ends)
+        delay = rsvp.word_delay(words[idx], wpm, idx in para_ends)
 
         t0 = time.monotonic()
         flash = self._flash_text if time.monotonic() < self._flash_until else None
         word_size = self.state.settings["word_size"]
-        img = (render.word_frame(chunk[0], self.theme, flash=flash, word_size=word_size)
-               if len(chunk) == 1
-               else render.chunk_frame(chunk, self.theme, word_size=word_size))
+        img = render.word_frame(words[idx], self.theme, flash=flash, word_size=word_size)
         self.display.show(img)
         elapsed = time.monotonic() - t0
-        self.refresh_secs = 0.8 * self.refresh_secs + 0.2 * elapsed
 
-        self.idx = end + 1
-        self.words_since_save += len(chunk)
+        self.idx = idx + 1
+        self.words_since_save += 1
         if self.words_since_save >= config.SAVE_EVERY_WORDS:
             self.save_position()
         if self.idx >= len(words):
@@ -308,7 +298,7 @@ class App:
                 self._accumulate_reading_time()
             self.push(screens.EndScreen())
             return
-        remaining = total_delay - elapsed
+        remaining = delay - elapsed
         if remaining > 0:
             time.sleep(remaining)
 
@@ -316,9 +306,8 @@ class App:
     def _boot_stack(self):
         """Always start with Library as root; push Paused when resuming."""
         self.push(screens.LibraryScreen())
-        library = books.scan_library()
         if (self.state.in_book and self.state.last_book
-                and any(p == self.state.last_book for _, p in library)):
+                and os.path.isfile(self.state.last_book)):
             self.book = books.Book.load(self.state.last_book)
             rec = self.state.book(self.state.last_book)
             self.idx = min(rec["position"], max(0, len(self.book.words) - 1))
@@ -346,15 +335,23 @@ class App:
                     continue
             else:
                 try:
-                    ev = self.events.get(timeout=1.0)
+                    ev = self.events.get(timeout=top.poll_timeout(self))
                 except queue.Empty:
                     self._tick_idle()
+                    if self._idle_state != "off":
+                        self.stack[-1].tick(self)
+                    elif isinstance(self.stack[-1], screens.ListScreen):
+                        # Sleep: reset list marquee so wake shows the start
+                        self.stack[-1]._reset_marquee()
                     continue
             self._last_input_at = time.monotonic()
             was_off = self._idle_state == "off"
             self._tick_idle()
             if was_off:
-                continue   # swallow the waking key press, per the control map
+                # Swallow the waking key; restart marquee dwell from wake.
+                if isinstance(self.stack[-1], screens.ListScreen):
+                    self.stack[-1]._reset_marquee()
+                continue
             self.stack[-1].handle(self, ev)
 
 
