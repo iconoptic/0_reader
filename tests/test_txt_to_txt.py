@@ -118,6 +118,45 @@ def test_chunk_leaves_short_words_alone():
     assert count == 0
 
 
+# --- Punctuation vs min_split_len / _CORE gaps -------------------------------
+
+def test_fourteen_letter_plus_comma_not_chunked_at_default_min_split():
+    """Core length is letters only; trailing punct does not tip min_split_len."""
+    # "extraordinary" = 13 letters; with comma still under DEFAULT_MIN_SPLIT_LEN=15.
+    text = "an extraordinary, claim"
+    out, stats = txt_to_txt.process_text(text)
+    assert out == text
+    assert stats["chunk_splits"] == 0
+    assert stats["concat_splits"] == 0
+    assert "extraordinary," in out.split()
+
+
+def test_chunk_keeps_trailing_punct_on_last_piece():
+    if pyphen is None:
+        pytest.skip("pyphen not installed")
+    out, count = txt_to_txt.chunk_long_words(
+        "antidisestablishmentarianism.", min_split_len=11, chunk_len=6
+    )
+    assert count == 1
+    pieces = out.split()
+    assert len(pieces) >= 2
+    assert pieces[-1].endswith(".")
+    assert not any(p.endswith(".") for p in pieces[:-1])
+    # Letter cores reassemble to the original lemma (hyphens from pyphen stripped).
+    letters = "".join(p.rstrip("-").rstrip(".") for p in pieces)
+    assert letters == "antidisestablishmentarianism"
+
+
+def test_core_miss_leaves_digit_hyphen_token_intact():
+    """_CORE is ASCII letters only; mixed tokens skip debind/chunk."""
+    text = "COVID-19, arrived"
+    out, stats = txt_to_txt.process_text(text)
+    assert out == text
+    assert stats["chunk_splits"] == 0
+    assert stats["concat_splits"] == 0
+    assert "COVID-19," in out.split()
+
+
 # --- Full pipeline -----------------------------------------------------------
 
 def test_pipeline_is_idempotent():
