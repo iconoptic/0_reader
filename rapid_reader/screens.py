@@ -468,7 +468,6 @@ class SettingsScreen(ListScreen):
         return "Display"
 
     def activate(self, app, item):
-        from dataclasses import replace
         s = app.state.settings
         if item == "word_size":
             i = (_WORD_SIZES.index(s["word_size"]) + 1) % len(_WORD_SIZES)
@@ -478,7 +477,7 @@ class SettingsScreen(ListScreen):
         elif item == "pivot_style":
             i = (_PIVOT_STYLES.index(s["pivot_style"]) + 1) % len(_PIVOT_STYLES)
             s["pivot_style"] = _PIVOT_STYLES[i]
-            app.theme = replace(app.theme, pivot_style=s["pivot_style"])
+            app.theme = app._with_saved_pivot(app.theme)
             app.state.save()
             app.redraw()
         elif item == "theme":
@@ -499,9 +498,7 @@ class ThemesScreen(ListScreen):
         return theme.THEMES[item].name + mark
 
     def activate(self, app, item):
-        from dataclasses import replace
         app.apply_theme(item)
-        app.theme = replace(app.theme, pivot_style=app.state.settings["pivot_style"])
         app.pop()
 
 

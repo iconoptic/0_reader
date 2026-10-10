@@ -31,6 +31,7 @@ import signal
 import sys
 import time
 import traceback
+from dataclasses import replace
 
 import books
 import buttons
@@ -49,8 +50,9 @@ class App:
         self.events = queue.Queue()
         self.input = (input_cls or buttons.Input)(self._on_event)
         self.state = state.State()
-        self.theme = theme.THEMES.get(self.state.settings["theme"],
-                                       theme.THEMES[theme.DEFAULT_THEME_KEY])
+        preset = theme.THEMES.get(self.state.settings["theme"],
+                                   theme.THEMES[theme.DEFAULT_THEME_KEY])
+        self.theme = self._with_saved_pivot(preset)
         self.book = None            # books.Book, set when a book is open
         self.idx = 0
         self.stack = []              # list[contracts.Screen]; stack[-1] is active
@@ -122,8 +124,11 @@ class App:
         self.display.show(img)
 
     # ---- theme / idle ----
+    def _with_saved_pivot(self, base):
+        return replace(base, pivot_style=self.state.settings["pivot_style"])
+
     def apply_theme(self, theme_key):
-        self.theme = theme.THEMES[theme_key]
+        self.theme = self._with_saved_pivot(theme.THEMES[theme_key])
         self.state.settings["theme"] = theme_key
         self.display.invert(self.theme.invert)
         self.display.contrast(self.theme.contrast)

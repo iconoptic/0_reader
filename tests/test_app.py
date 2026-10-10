@@ -874,6 +874,46 @@ def test_themes_screen_apply_and_preserve_pivot(app):
     assert isinstance(a.stack[-1], screens.SettingsScreen)
 
 
+@pytest.mark.parametrize("theme_key,builtin_pivot", [
+    ("paper", "underline"),
+    ("focus", "box"),
+    ("dim", "bold"),
+])
+def test_boot_restores_saved_pivot_over_preset(app, theme_key, builtin_pivot):
+    """settings.pivot_style must land on app.theme at construct time, not
+    only after a settings-screen cycle (the Dim/bold restart bug)."""
+    import theme
+    preset = theme.THEMES[theme_key]
+    assert preset.pivot_style == builtin_pivot
+
+    a0 = app()
+    a0.state.settings["theme"] = theme_key
+    a0.state.settings["pivot_style"] = "ticks"
+    a0.state.settings["word_size"] = "large"
+    a0.state.settings["wpm"] = 350
+    a0.state.save()
+
+    a = app()
+    assert a.state.settings["theme"] == theme_key
+    assert a.state.settings["pivot_style"] == "ticks"
+    assert a.state.settings["word_size"] == "large"
+    assert a.state.settings["wpm"] == 350
+    assert a.theme.pivot_style == "ticks"
+    assert a.theme.name == preset.name
+    assert a.theme.font_key == preset.font_key
+    assert a.theme.invert is preset.invert
+    assert a.theme.contrast == preset.contrast
+    assert a.display.panel.inverted is preset.invert
+    assert a.display.panel.contrast_level == preset.contrast
+
+    other = "mono" if theme_key != "mono" else "night"
+    a._boot_stack()
+    a.apply_theme(other)
+    assert a.state.settings["pivot_style"] == "ticks"
+    assert a.theme.pivot_style == "ticks"
+    assert a.theme.name == theme.THEMES[other].name
+
+
 def test_display_settings_contrast_session_only(app):
     a = _open_paused(app)
     fire(a, "k2")
